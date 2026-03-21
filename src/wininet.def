@@ -1,0 +1,7 @@
+LIBRARY wininet
+EXPORTS
+    InternetOpenA       = ProxyInternetOpenA
+    InternetOpenUrlA    = ProxyInternetOpenUrlA
+    InternetSetCookieA  = ProxyInternetSetCookieA
+    InternetCloseHandle = ProxyInternetCloseHandle
+    InternetReadFile    = ProxyInternetReadFile

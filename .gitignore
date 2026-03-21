@@ -1,0 +1,8 @@
+build/
+deps/
+.xwin-cache/
+Debug/
+Release/
+x64/
+*.user
+.vs/
