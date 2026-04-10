@@ -121,7 +121,6 @@ GameWalkFn GameWalk = (GameWalkFn)FUNC_WALK_ADDR;
 constexpr BYTE MSG_CLIENT      = 0x01;  // client->server packet
 constexpr BYTE MSG_SERVER      = 0x02;  // server->client packet
 constexpr BYTE MSG_WALK        = 0x03;  // walk command (direction byte)
-constexpr BYTE MSG_REGISTER    = 0x05;  // character registration payload
 constexpr BYTE MSG_BECOME_REG  = 0x06;  // become registry server
 constexpr BYTE MSG_WALLS       = 0x07;  // toggle wall rendering
 
@@ -165,6 +164,7 @@ struct SpellInfo {
 struct ItemInfo {
     int slot, sprite, color;
     std::string name;
+    uint32_t quantity;
 };
 
 std::map<int, SpellInfo> charSpells;
@@ -253,6 +253,21 @@ void SendToBeryl(BYTE msgType, const BYTE* data, DWORD len) {
 uint16_t ReadBE16(const BYTE* p) { return (p[0] << 8) | p[1]; }
 uint32_t ReadBE32(const BYTE* p) { return (p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]; }
 
+void WriteBE16(std::string& buf, uint16_t v) {
+    buf += (char)(v >> 8);
+    buf += (char)(v & 0xFF);
+}
+void WriteBE32(std::string& buf, uint32_t v) {
+    buf += (char)(v >> 24);
+    buf += (char)((v >> 16) & 0xFF);
+    buf += (char)((v >> 8) & 0xFF);
+    buf += (char)(v & 0xFF);
+}
+void WriteString8(std::string& buf, const std::string& s) {
+    buf += (char)(uint8_t)s.size();
+    buf += s;
+}
+
 std::string ReadString8(const BYTE* data, DWORD size, DWORD& pos) {
     if (pos >= size) return "";
     uint8_t len = data[pos++];
@@ -282,55 +297,71 @@ json BuildRegistrationPayload() {
     return {{"pid", pid}, {"port", clientPort}, {"name", charName}};
 }
 
-json BuildCharacterPayload() {
-    // Caller must hold charDataMutex
-    json payload = {{"pid", pid}, {"port", clientPort}, {"name", charName}};
-
-    payload["currentHP"] = charCurrentHP;
-    payload["maxHP"] = charMaxHP;
-    payload["currentMP"] = charCurrentMP;
-    payload["maxMP"] = charMaxMP;
-
-    if (!charSpells.empty()) {
-        json spells = json::object();
-        for (auto it = charSpells.begin(); it != charSpells.end(); ++it) {
-            spells[std::to_string(it->first)] = {
-                {"slot", it->second.slot},
-                {"icon", it->second.icon},
-                {"targetType", it->second.targetType},
-                {"name", it->second.name},
-                {"prompt", it->second.prompt},
-                {"lines", it->second.lines}
-            };
-        }
-        payload["spells"] = spells;
-    }
-
-    if (!charInventory.empty()) {
-        json inventory = json::object();
-        for (auto it = charInventory.begin(); it != charInventory.end(); ++it) {
-            inventory[std::to_string(it->first)] = {
-                {"slot", it->second.slot},
-                {"sprite", it->second.sprite},
-                {"color", it->second.color},
-                {"name", it->second.name}
-            };
-        }
-        payload["inventory"] = inventory;
-    }
-
-    return payload;
+// =============================================================================
+// Packet reconstruction (rebuild server packets from parsed state)
+// =============================================================================
+std::string BuildPlayerIdPacket() {
+    std::string pkt;
+    pkt += (char)0x05;
+    WriteBE32(pkt, charId);
+    return pkt;
 }
 
-void SendCharPayloadToBeryl(struct mg_connection* c) {
-    // Caller must hold charDataMutex
-    std::string jsonStr = BuildCharacterPayload().dump();
+std::string BuildStatsPacket() {
+    std::string pkt;
+    pkt += (char)0x08;
+    pkt += (char)0x30;  // bitmask: 0x20 (max stats) | 0x10 (current stats)
+    // 0x20 block: 28 bytes, maxHP at offset +5, maxMP at +9
+    pkt.append(5, '\0');
+    WriteBE32(pkt, charMaxHP);
+    WriteBE32(pkt, charMaxMP);
+    pkt.append(15, '\0');  // remaining bytes to reach 28 total (5+4+4+15=28)
+    // 0x10 block: 8 bytes
+    WriteBE32(pkt, charCurrentHP);
+    WriteBE32(pkt, charCurrentMP);
+    return pkt;
+}
 
-    std::string frame(1 + jsonStr.size(), '\0');
-    frame[0] = (char)MSG_REGISTER;
-    memcpy(&frame[1], jsonStr.data(), jsonStr.size());
+std::string BuildSpellPacket(const SpellInfo& sp) {
+    std::string pkt;
+    pkt += (char)0x17;
+    pkt += (char)(uint8_t)sp.slot;
+    WriteBE16(pkt, (uint16_t)sp.icon);
+    pkt += (char)(uint8_t)sp.targetType;
+    WriteString8(pkt, sp.name);
+    WriteString8(pkt, sp.prompt);
+    pkt += (char)(uint8_t)sp.lines;
+    return pkt;
+}
 
+std::string BuildItemPacket(const ItemInfo& item) {
+    std::string pkt;
+    pkt += (char)0x0F;
+    pkt += (char)(uint8_t)item.slot;
+    WriteBE16(pkt, (uint16_t)item.sprite);
+    pkt += (char)(uint8_t)item.color;
+    WriteString8(pkt, item.name);
+    WriteBE32(pkt, item.quantity);
+    return pkt;
+}
+
+void SendPacketToBeryl(struct mg_connection* c, const std::string& pkt) {
+    std::string frame(1 + pkt.size(), '\0');
+    frame[0] = (char)MSG_SERVER;
+    memcpy(&frame[1], pkt.data(), pkt.size());
     mg_ws_send(c, frame.data(), frame.size(), WEBSOCKET_OP_BINARY);
+}
+
+void ReplayCharDataToBeryl(struct mg_connection* c) {
+    // Caller must hold charDataMutex
+    SendPacketToBeryl(c, BuildPlayerIdPacket());
+    SendPacketToBeryl(c, BuildStatsPacket());
+    for (auto it = charSpells.begin(); it != charSpells.end(); ++it) {
+        SendPacketToBeryl(c, BuildSpellPacket(it->second));
+    }
+    for (auto it = charInventory.begin(); it != charInventory.end(); ++it) {
+        SendPacketToBeryl(c, BuildItemPacket(it->second));
+    }
 }
 
 void TryRegister() {
@@ -348,8 +379,8 @@ void TryRegister() {
         std::string s = msg.dump();
         mg_ws_send(g_registryClientConn, s.c_str(), s.size(), WEBSOCKET_OP_TEXT);
     } else if (g_clientConn) {
-        // Registry is down -- send full character data over the per-client WS
-        SendCharPayloadToBeryl(g_clientConn);
+        // Registry is down -- replay character data over the per-client WS
+        ReplayCharDataToBeryl(g_clientConn);
     }
 }
 
@@ -389,6 +420,13 @@ void ParseServerPacket(const BYTE* data, DWORD size) {
         }
         break;
     }
+    case 0x18: { // removeSpell
+        if (size >= 2) {
+            int slot = data[1];
+            charSpells.erase(slot);
+        }
+        break;
+    }
     case 0x17: { // loadSpell
         if (size < 2) break;
         DWORD pos = 1;
@@ -411,7 +449,9 @@ void ParseServerPacket(const BYTE* data, DWORD size) {
         int sprite = ReadBE16(data + pos); pos += 2;
         int color = data[pos++];
         std::string name = ReadString8(data, size, pos);
-        charInventory[slot] = {slot, sprite, color, name};
+        if (pos + 4 > size) break;
+        uint32_t quantity = ReadBE32(data + pos); pos += 4;
+        charInventory[slot] = {slot, sprite, color, name, quantity};
         break;
     }
     case 0x10: { // removeItemFromPane
@@ -550,7 +590,7 @@ void ClientHandler(struct mg_connection* c, int ev, void* ev_data) {
         // Send current character data so Beryl has it immediately
         std::lock_guard<std::mutex> lock(charDataMutex);
         if (!charName.empty()) {
-            SendCharPayloadToBeryl(c);
+            ReplayCharDataToBeryl(c);
         }
     } else if (ev == MG_EV_WS_MSG) {
         struct mg_ws_message* wm = (struct mg_ws_message*)ev_data;
