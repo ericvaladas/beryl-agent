@@ -184,6 +184,7 @@ bool registryClientConnected = false;
 int clientPort = 0;
 
 std::vector<json> registeredClients;
+std::map<struct mg_connection*, DWORD> registryConnPid;  // track which PID registered from which connection
 
 // Threading
 std::thread* wsThread = nullptr;
@@ -674,6 +675,7 @@ void RegistryHandler(struct mg_connection* c, int ev, void* ev_data) {
                 json clientData = data;
                 clientData.erase("type");
                 RegistryAddClient(clientData);
+                registryConnPid[c] = (DWORD)clientData["pid"];
             } else if (type == "deregister") {
                 DWORD clientPid = (DWORD)data["pid"];
                 RegistryRemoveClient(clientPid);
@@ -686,11 +688,10 @@ void RegistryHandler(struct mg_connection* c, int ev, void* ev_data) {
             // LogToFile("Registry: exception parsing message");
         }
     } else if (ev == MG_EV_CLOSE) {
-        // LogToFile("Registry: connection closed");
-        // Clear file queue if this connection was sending files
-        if (c == g_fileSendConn) {
-            g_fileSendConn = nullptr;
-            g_fileQueue.clear();
+        auto it = registryConnPid.find(c);
+        if (it != registryConnPid.end()) {
+            RegistryRemoveClient(it->second);
+            registryConnPid.erase(it);
         }
     }
 }
