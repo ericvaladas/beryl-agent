@@ -45,64 +45,21 @@ constexpr DWORD SEND_THIS_ADDR = 0x0073D958;
 constexpr DWORD FUNC_WALK_ADDR = 0x005F0C40;
 constexpr DWORD OBJECT_BASE_ADDR = 0x00882E68;
 
-// Wall tile data toggle
-// Pointer chain: [OBJECT_BASE_ADDR] + 0x190 + 0x0C -> tile array
-// Each tile is 6 bytes: layer1(2) + layer2(2) + layer3(2)
-// Zeroing layer2/layer3 hides walls
-std::vector<BYTE> wallsSavedTileData;
-bool wallsHidden = false;
+// Generic memory read/write via pointer chain resolution
+// Chain: moduleBase + offsets[0], then dereference + add each subsequent offset
+BYTE* ResolvePointerChain(const BYTE* offsets, int chainLength) {
+    DWORD moduleBase = (DWORD)GetModuleHandle(NULL);
+    if (!moduleBase) return nullptr;
 
-BYTE* GetTileArray() {
-    void* base = *(void**)OBJECT_BASE_ADDR;
-    if (!base) return nullptr;
-    void* obj = *(void**)((BYTE*)base + 0x190);
-    if (!obj) return nullptr;
-    return *(BYTE**)((BYTE*)obj + 0x0C);
-}
+    DWORD addr = moduleBase + *(DWORD*)(offsets);
 
-bool IsRenderedWall(uint16_t id) {
-    if (id == 0) return false;
-    return (id > 10012) || ((id % 10000) > 12);
-}
-
-void ToggleWalls(bool hide, uint16_t width, uint16_t height, const BYTE* wallBitmask) {
-    if (hide == wallsHidden) return;
-
-    BYTE* tiles = GetTileArray();
-    if (!tiles) return;
-
-    DWORD totalTiles = (DWORD)width * height;
-    DWORD dataSize = totalTiles * 6;
-
-    if (hide) {
-        // Save original tile data
-        wallsSavedTileData.assign(tiles, tiles + dataSize);
-        for (DWORD i = 0; i < totalTiles; i++) {
-            DWORD offset = i * 6;
-            uint16_t layer2 = tiles[offset + 2] | (tiles[offset + 3] << 8);
-            uint16_t layer3 = tiles[offset + 4] | (tiles[offset + 5] << 8);
-            bool isWall = wallBitmask[i >> 3] & (1 << (i & 7));
-            // Sprite to replace with: 1 = invisible + blocking, 0 = invisible + walkable
-            BYTE replacement = isWall ? 1 : 0;
-
-            if (IsRenderedWall(layer2)) {
-                tiles[offset + 2] = replacement;
-                tiles[offset + 3] = 0;
-            }
-            if (IsRenderedWall(layer3)) {
-                tiles[offset + 4] = replacement;
-                tiles[offset + 5] = 0;
-            }
-        }
-    } else {
-        // Restore original tile data
-        if (wallsSavedTileData.size() == dataSize) {
-            memcpy(tiles, wallsSavedTileData.data(), dataSize);
-        }
-        wallsSavedTileData.clear();
+    for (int i = 1; i < chainLength; i++) {
+        DWORD* ptr = (DWORD*)addr;
+        if (IsBadReadPtr(ptr, sizeof(DWORD))) return nullptr;
+        addr = *ptr + *(DWORD*)(offsets + i * 4);
     }
 
-    wallsHidden = hide;
+    return (BYTE*)addr;
 }
 
 // __thiscall: ECX = this, args on stack
@@ -118,11 +75,12 @@ GameWalkFn GameWalk = (GameWalkFn)FUNC_WALK_ADDR;
 // =============================================================================
 // Message types (must match Beryl side)
 // =============================================================================
-constexpr BYTE MSG_CLIENT      = 0x01;  // client->server packet
-constexpr BYTE MSG_SERVER      = 0x02;  // server->client packet
-constexpr BYTE MSG_WALK        = 0x03;  // walk command (direction byte)
-constexpr BYTE MSG_BECOME_REG  = 0x06;  // become registry server
-constexpr BYTE MSG_WALLS       = 0x07;  // toggle wall rendering
+constexpr BYTE MSG_CLIENT       = 0x01;  // client->server packet
+constexpr BYTE MSG_SERVER       = 0x02;  // server->client packet
+constexpr BYTE MSG_WALK         = 0x03;  // walk command (direction byte)
+constexpr BYTE MSG_READ_MEMORY  = 0x04;  // read memory via pointer chain
+constexpr BYTE MSG_WRITE_MEMORY = 0x05;  // write memory via pointer chain
+constexpr BYTE MSG_BECOME_REG   = 0x06;  // become registry server
 
 // DLL's directory (Dark Ages install dir), used for serving game files over WS
 std::string g_dllDirectory;
@@ -635,14 +593,54 @@ void ClientHandler(struct mg_connection* c, int ev, void* ev_data) {
                     GameWalk(thisPtr, (int)body[0]);
                 }
             }
-        } else if (msgType == MSG_WALLS) {
-            // body: [enable(1), width(2 LE), height(2 LE), bitmask(...)]
+        } else if (msgType == MSG_READ_MEMORY) {
+            // body: [request_id(1), chain_length(1), offsets(chain_length*4 LE), size(4 LE)]
             if (bodyLen >= 6) {
-                bool hide = body[0] != 0;
-                uint16_t width = body[1] | (body[2] << 8);
-                uint16_t height = body[3] | (body[4] << 8);
-                const BYTE* bitmask = body + 5;
-                ToggleWalls(hide, width, height, bitmask);
+                BYTE requestId = body[0];
+                BYTE chainLength = body[1];
+                DWORD expectedLen = 2 + (DWORD)chainLength * 4 + 4;
+                if (bodyLen >= expectedLen && chainLength > 0) {
+                    const BYTE* offsets = body + 2;
+                    DWORD size = *(DWORD*)(body + 2 + chainLength * 4);
+
+                    BYTE* addr = ResolvePointerChain(offsets, chainLength);
+
+                    // Response: [MSG_READ_MEMORY, request_id, data...]
+                    std::vector<BYTE> response(2 + size);
+                    response[0] = MSG_READ_MEMORY;
+                    response[1] = requestId;
+                    if (addr && !IsBadReadPtr(addr, size)) {
+                        memcpy(response.data() + 2, addr, size);
+                    }
+                    // else: zeros (default from vector init)
+
+                    mg_ws_send(c, (const char*)response.data(), response.size(), WEBSOCKET_OP_BINARY);
+                }
+            }
+        } else if (msgType == MSG_WRITE_MEMORY) {
+            // body: [request_id(1), chain_length(1), offsets(chain_length*4 LE), size(4 LE), data(size)]
+            if (bodyLen >= 6) {
+                BYTE requestId = body[0];
+                BYTE chainLength = body[1];
+                DWORD headerLen = 2 + (DWORD)chainLength * 4 + 4;
+                if (bodyLen >= headerLen && chainLength > 0) {
+                    DWORD size = *(DWORD*)(body + 2 + chainLength * 4);
+                    const BYTE* data = body + headerLen;
+
+                    BYTE status = 1; // failed
+                    const BYTE* offsets = body + 2;
+                    if (bodyLen >= headerLen + size) {
+                        BYTE* addr = ResolvePointerChain(offsets, chainLength);
+                        if (addr && !IsBadWritePtr(addr, size)) {
+                            memcpy(addr, data, size);
+                            status = 0; // ok
+                        }
+                    }
+
+                    // Response: [MSG_WRITE_MEMORY, request_id, status]
+                    BYTE response[3] = { MSG_WRITE_MEMORY, requestId, status };
+                    mg_ws_send(c, (const char*)response, 3, WEBSOCKET_OP_BINARY);
+                }
             }
         }
     } else if (ev == MG_EV_ERROR) {
