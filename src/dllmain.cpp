@@ -420,7 +420,16 @@ void ParseServerPacket(const BYTE* data, DWORD size) {
         }
         break;
     }
-    case 0x4C: { // logout -- reset all accumulated state
+    case 0x4C: { // logout -- deregister and reset all accumulated state
+        if (charRegistered) {
+            if (isRegistry) {
+                RegistryRemoveClient(pid);
+            } else if (registryClientConnected && g_registryClientConn) {
+                json msg = {{"type", "deregister"}, {"pid", pid}};
+                std::string s = msg.dump();
+                mg_ws_send(g_registryClientConn, s.c_str(), s.size(), WEBSOCKET_OP_TEXT);
+            }
+        }
         charName.clear();
         charId = 0;
         charSpells.clear();
