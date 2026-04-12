@@ -396,6 +396,20 @@ public:
     }
 
     type_t type() const { return m_type; }
+
+    // ── Array iteration ────────────────────────────────────────────────
+    using iterator = std::vector<json>::iterator;
+    using const_iterator = std::vector<json>::const_iterator;
+
+    iterator begin() { return m_arr.begin(); }
+    iterator end() { return m_arr.end(); }
+    const_iterator begin() const { return m_arr.begin(); }
+    const_iterator end() const { return m_arr.end(); }
+
+    size_t size() const { return m_type == t_array ? m_arr.size() : 0; }
+
+    // ── String access ──────────────────────────────────────────────────
+    const std::string& str() const { return m_str; }
 };
 
 } // namespace mini

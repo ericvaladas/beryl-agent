@@ -154,6 +154,7 @@ std::string g_pendingOrigin;
 bool g_consentDialogActive = false;
 constexpr uint16_t CONSENT_PURSUIT_ID = 0xFFFF;
 constexpr uint32_t CONSENT_ENTITY_ID = 0xFFFFFFFF;
+constexpr uint16_t CONSENT_ENTITY_SPRITE = 0x80E8;
 
 std::set<std::string> g_allowedOrigins;
 std::string g_allowedOriginsPath;
@@ -472,7 +473,7 @@ void ShowConsentDialog(const std::string& origin) {
     pkt += (char)0x00;        // EntityType
     WriteBE32(pkt, CONSENT_ENTITY_ID);
     pkt += (char)0x01;        // Unknown1
-    WriteBE16(pkt, 0x0000);   // SpritePrimary
+    WriteBE16(pkt, CONSENT_ENTITY_SPRITE);
     pkt += (char)0x00;        // Color
     pkt += (char)0x01;        // Unknown2
     WriteBE16(pkt, 0x0000);   // SpriteSecondary
@@ -483,7 +484,7 @@ void ShowConsentDialog(const std::string& origin) {
     pkt += (char)0x00;        // HasNextButton
     pkt += (char)0x01;        // ShowGraphic (inverted: 1 = hide)
     WriteString8(pkt, "Beryl");
-    std::string content = "Allow connection from " + origin + "?";
+    std::string content = "Allow connections from " + origin + "?";
     // String16: 2-byte BE length prefix
     WriteBE16(pkt, (uint16_t)content.size());
     pkt += content;
@@ -512,24 +513,12 @@ void LoadAllowedOrigins() {
                          std::istreambuf_iterator<char>());
     file.close();
 
-    // Parse {"allowedOrigins": ["origin1","origin2"]}
-    // Find the array value for "allowedOrigins" and extract quoted strings
-    size_t key = content.find("\"allowedOrigins\"");
-    if (key == std::string::npos) return;
-
-    size_t start = content.find('[', key);
-    size_t end = content.find(']', start != std::string::npos ? start : 0);
-    if (start == std::string::npos || end == std::string::npos) return;
-
-    size_t pos = start;
-    while (pos < end) {
-        size_t q1 = content.find('"', pos);
-        if (q1 == std::string::npos || q1 >= end) break;
-        size_t q2 = content.find('"', q1 + 1);
-        if (q2 == std::string::npos || q2 >= end) break;
-        g_allowedOrigins.insert(content.substr(q1 + 1, q2 - q1 - 1));
-        pos = q2 + 1;
-    }
+    try {
+        json j = json::parse(content);
+        for (const auto& item : j["allowedOrigins"]) {
+            g_allowedOrigins.insert(item.str());
+        }
+    } catch (...) {}
 }
 
 void SaveAllowedOrigins() {
@@ -880,6 +869,36 @@ void RegistryHandler(struct mg_connection* c, int ev, void* ev_data) {
                 uint32_t requestId = (uint32_t)data["id"];
                 std::string path = data["path"];
                 QueueFileRequest(c, requestId, path);
+            } else if (type == "getSettings" && g_clientConn) {
+                std::ifstream settingsFile(g_allowedOriginsPath);
+                std::string content = "{}";
+                if (settingsFile.is_open()) {
+                    content.assign((std::istreambuf_iterator<char>(settingsFile)),
+                                    std::istreambuf_iterator<char>());
+                    settingsFile.close();
+                }
+                // Wrap in a message with type
+                json resp = json::parse(content);
+                resp["type"] = "settings";
+                std::string out = resp.dump();
+                mg_ws_send(c, out.c_str(), out.size(), WEBSOCKET_OP_TEXT);
+            } else if (type == "setSettings" && g_clientConn) {
+                // Update in-memory allowed origins if present
+                const json& origins = data["allowedOrigins"];
+                if (origins.type() == json::t_array) {
+                    g_allowedOrigins.clear();
+                    for (const auto& item : origins) {
+                        g_allowedOrigins.insert(item.str());
+                    }
+                }
+
+                // Write full settings to disk (strip "type" key)
+                json settings = data;
+                settings.erase("type");
+                std::ofstream settingsFile(g_allowedOriginsPath);
+                if (settingsFile.is_open()) {
+                    settingsFile << settings.dump();
+                }
             }
         } catch (...) {
             // LogToFile("Registry: exception parsing message");
@@ -990,7 +1009,9 @@ BOOL APIENTRY DllMain(HINSTANCE hInst, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         LoadRealWininet();
         g_dllDirectory = GetDllDirectory(hInst);
-        g_allowedOriginsPath = g_dllDirectory + "\\beryl.json";
+        std::string appdata = std::string(getenv("LOCALAPPDATA")) + "\\beryl";
+        CreateDirectoryA(appdata.c_str(), NULL);
+        g_allowedOriginsPath = appdata + "\\settings.json";
         LoadAllowedOrigins();
         pid = GetCurrentProcessId();
 
