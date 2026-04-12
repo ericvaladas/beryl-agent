@@ -552,6 +552,16 @@ void ResetConsentState() {
     g_pendingOrigin.clear();
 }
 
+void PromoteConnection(struct mg_connection* c) {
+    g_clientConn = c;
+    BYTE ready = MSG_READY;
+    mg_ws_send(g_clientConn, (const char*)&ready, 1, WEBSOCKET_OP_BINARY);
+    std::lock_guard<std::mutex> lock(charDataMutex);
+    if (!charName.empty()) {
+        ReplayCharDataToBeryl(g_clientConn);
+    }
+}
+
 // =============================================================================
 // Hooks (__fastcall with dummy edx to intercept __thiscall)
 // =============================================================================
@@ -577,14 +587,7 @@ bool ShouldSuppressClientPacket(const BYTE* data, DWORD size) {
         if (accepted && g_pendingConn) {
             g_allowedOrigins.insert(g_pendingOrigin);
             SaveAllowedOrigins();
-
-            g_clientConn = g_pendingConn;
-            BYTE ready = MSG_READY;
-            mg_ws_send(g_clientConn, (const char*)&ready, 1, WEBSOCKET_OP_BINARY);
-            std::lock_guard<std::mutex> lock(charDataMutex);
-            if (!charName.empty()) {
-                ReplayCharDataToBeryl(g_clientConn);
-            }
+            PromoteConnection(g_pendingConn);
         } else if (g_pendingConn) {
             g_pendingConn->is_closing = 1;
         }
@@ -727,13 +730,7 @@ void ClientHandler(struct mg_connection* c, int ev, void* ev_data) {
 
         // Auto-approve if origin was previously allowed
         if (g_allowedOrigins.count(g_pendingOrigin)) {
-            g_clientConn = c;
-            BYTE ready = MSG_READY;
-            mg_ws_send(g_clientConn, (const char*)&ready, 1, WEBSOCKET_OP_BINARY);
-            std::lock_guard<std::mutex> lock(charDataMutex);
-            if (!charName.empty()) {
-                ReplayCharDataToBeryl(g_clientConn);
-            }
+            PromoteConnection(c);
             return;
         }
 
