@@ -9,6 +9,8 @@
 #include <string>
 #include <cstring>
 #include <algorithm>
+#include <set>
+#include <fstream>
 
 #include "json.h"
 
@@ -152,6 +154,9 @@ std::string g_pendingOrigin;
 bool g_consentDialogActive = false;
 constexpr uint16_t CONSENT_PURSUIT_ID = 0xFFFF;
 constexpr uint32_t CONSENT_ENTITY_ID = 0xFFFFFFFF;
+
+std::set<std::string> g_allowedOrigins;
+std::string g_allowedOriginsPath;
 
 // Threading
 std::thread* wsThread = nullptr;
@@ -498,6 +503,49 @@ void CloseConsentDialog() {
     InjectServerPacket(pkt);
 }
 
+void LoadAllowedOrigins() {
+    g_allowedOrigins.clear();
+    std::ifstream file(g_allowedOriginsPath);
+    if (!file.is_open()) return;
+
+    std::string content((std::istreambuf_iterator<char>(file)),
+                         std::istreambuf_iterator<char>());
+    file.close();
+
+    // Parse {"allowedOrigins": ["origin1","origin2"]}
+    // Find the array value for "allowedOrigins" and extract quoted strings
+    size_t key = content.find("\"allowedOrigins\"");
+    if (key == std::string::npos) return;
+
+    size_t start = content.find('[', key);
+    size_t end = content.find(']', start != std::string::npos ? start : 0);
+    if (start == std::string::npos || end == std::string::npos) return;
+
+    size_t pos = start;
+    while (pos < end) {
+        size_t q1 = content.find('"', pos);
+        if (q1 == std::string::npos || q1 >= end) break;
+        size_t q2 = content.find('"', q1 + 1);
+        if (q2 == std::string::npos || q2 >= end) break;
+        g_allowedOrigins.insert(content.substr(q1 + 1, q2 - q1 - 1));
+        pos = q2 + 1;
+    }
+}
+
+void SaveAllowedOrigins() {
+    json arr;
+    for (const auto& origin : g_allowedOrigins) {
+        arr.push_back(json(origin));
+    }
+
+    json j = {{"allowedOrigins", arr}};
+
+    std::ofstream file(g_allowedOriginsPath);
+    if (file.is_open()) {
+        file << j.dump();
+    }
+}
+
 void ResetConsentState() {
     g_consentDialogActive = false;
     g_pendingConn = nullptr;
@@ -527,6 +575,9 @@ bool ShouldSuppressClientPacket(const BYTE* data, DWORD size) {
         CloseConsentDialog();
 
         if (accepted && g_pendingConn) {
+            g_allowedOrigins.insert(g_pendingOrigin);
+            SaveAllowedOrigins();
+
             g_clientConn = g_pendingConn;
             BYTE ready = MSG_READY;
             mg_ws_send(g_clientConn, (const char*)&ready, 1, WEBSOCKET_OP_BINARY);
@@ -671,6 +722,18 @@ void ClientHandler(struct mg_connection* c, int ev, void* ev_data) {
         // If not logged in, can't show dialog — reject
         if (!g_recvThis) {
             c->is_closing = 1;
+            return;
+        }
+
+        // Auto-approve if origin was previously allowed
+        if (g_allowedOrigins.count(g_pendingOrigin)) {
+            g_clientConn = c;
+            BYTE ready = MSG_READY;
+            mg_ws_send(g_clientConn, (const char*)&ready, 1, WEBSOCKET_OP_BINARY);
+            std::lock_guard<std::mutex> lock(charDataMutex);
+            if (!charName.empty()) {
+                ReplayCharDataToBeryl(g_clientConn);
+            }
             return;
         }
 
@@ -930,6 +993,8 @@ BOOL APIENTRY DllMain(HINSTANCE hInst, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         LoadRealWininet();
         g_dllDirectory = GetDllDirectory(hInst);
+        g_allowedOriginsPath = g_dllDirectory + "\\beryl.json";
+        LoadAllowedOrigins();
         pid = GetCurrentProcessId();
 
         std::string mutexStr = "ProxyInjected_" + std::to_string(pid);
