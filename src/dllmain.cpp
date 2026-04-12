@@ -137,6 +137,7 @@ struct mg_connection* g_clientListener = nullptr;  // Client WS listener
 struct mg_connection* g_clientConn = nullptr;       // Connected Beryl client
 struct mg_connection* g_registryListener = nullptr; // Registry WS listener
 struct mg_connection* g_registryClientConn = nullptr; // Our connection to registry
+unsigned long g_wakeupId = 0;                        // ID for mg_wakeup target
 bool isRegistry = false;
 bool registryClientConnected = false;
 int clientPort = 0;
@@ -194,16 +195,16 @@ void RegistryRemoveClient(DWORD clientPid) {
 }
 
 // =============================================================================
-// Send observed packet to Beryl via client WebSocket
+// Send observed packet to Beryl via client WebSocket (thread-safe)
 // =============================================================================
 void SendToBeryl(BYTE msgType, const BYTE* data, DWORD len) {
-    if (!g_clientConn || !running) return;
+    if (!g_clientConn || !running || !g_wakeupId) return;
 
     std::string payload(1 + len, '\0');
     payload[0] = (char)msgType;
     memcpy(&payload[1], data, len);
 
-    mg_ws_send(g_clientConn, payload.data(), payload.size(), WEBSOCKET_OP_BINARY);
+    mg_wakeup(&g_mgr, g_wakeupId, payload.data(), payload.size());
 }
 
 // =============================================================================
@@ -652,6 +653,12 @@ void ClientHandler(struct mg_connection* c, int ev, void* ev_data) {
                 }
             }
         }
+    } else if (ev == MG_EV_WAKEUP) {
+        // Forwarded from game thread via mg_wakeup — send to Beryl on mongoose thread
+        struct mg_str* data = (struct mg_str*)ev_data;
+        if (g_clientConn) {
+            mg_ws_send(g_clientConn, data->buf, data->len, WEBSOCKET_OP_BINARY);
+        }
     } else if (ev == MG_EV_ERROR) {
         // LogToFile(std::string("Client error: ") + (const char*)ev_data);
     } else if (ev == MG_EV_CLOSE) {
@@ -826,8 +833,12 @@ BOOL APIENTRY DllMain(HINSTANCE hInst, DWORD reason, LPVOID) {
         // Start WebSocket servers on a background thread
         wsThread = new std::thread([]() {
             mg_mgr_init(&g_mgr);
+            mg_wakeup_init(&g_mgr);
 
             clientPort = StartClientServer();
+            if (g_clientListener) {
+                g_wakeupId = g_clientListener->id;
+            }
             if (clientPort == 0) {
                 LogToFile("Failed to start client WS server on any port");
                 mg_mgr_free(&g_mgr);
