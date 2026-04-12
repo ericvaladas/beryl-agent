@@ -145,6 +145,13 @@ int clientPort = 0;
 std::vector<json> registeredClients;
 std::map<struct mg_connection*, DWORD> registryConnPid;  // track which PID registered from which connection
 
+// Connection consent state
+struct mg_connection* g_pendingConn = nullptr;
+std::string g_pendingOrigin;
+bool g_consentDialogActive = false;
+constexpr uint16_t CONSENT_PURSUIT_ID = 0xFFFF;
+constexpr uint32_t CONSENT_ENTITY_ID = 0xFFFFFFFF;
+
 // Threading
 std::thread* wsThread = nullptr;
 
@@ -443,10 +450,131 @@ void ParseServerPacket(const BYTE* data, DWORD size) {
 }
 
 // =============================================================================
+// Connection consent dialog
+// =============================================================================
+void InjectServerPacket(const std::string& pkt) {
+    void* thisPtr = g_recvThis;
+    if (thisPtr) {
+        OrigGameRecv(thisPtr, (const BYTE*)pkt.data(), (DWORD)pkt.size());
+    }
+}
+
+void ShowConsentDialog(const std::string& origin) {
+    std::string pkt;
+    pkt += (char)0x30;        // opcode: ShowDialog
+    pkt += (char)0x02;        // DialogType::Menu
+    pkt += (char)0x00;        // EntityType
+    WriteBE32(pkt, CONSENT_ENTITY_ID);
+    pkt += (char)0x01;        // Unknown1
+    WriteBE16(pkt, 0x0000);   // SpritePrimary
+    pkt += (char)0x00;        // Color
+    pkt += (char)0x01;        // Unknown2
+    WriteBE16(pkt, 0x0000);   // SpriteSecondary
+    pkt += (char)0x00;        // ColorSecondary
+    WriteBE16(pkt, CONSENT_PURSUIT_ID);
+    WriteBE16(pkt, 0x0000);   // StepId
+    pkt += (char)0x00;        // HasPreviousButton
+    pkt += (char)0x00;        // HasNextButton
+    pkt += (char)0x01;        // ShowGraphic (inverted: 1 = hide)
+    WriteString8(pkt, "Beryl");
+    std::string content = "Allow connection from " + origin + "?";
+    // String16: 2-byte BE length prefix
+    WriteBE16(pkt, (uint16_t)content.size());
+    pkt += content;
+    pkt += (char)0x02;        // ChoiceCount
+    WriteString8(pkt, "Yes");
+    WriteString8(pkt, "No");
+
+    std::string hex;
+    for (size_t i = 0; i < pkt.size(); i++) {
+        char buf[4];
+        snprintf(buf, sizeof(buf), "%02X ", (BYTE)pkt[i]);
+        hex += buf;
+    }
+    LogToFile("ShowConsentDialog packet: " + hex);
+    InjectServerPacket(pkt);
+    g_consentDialogActive = true;
+    LogToFile("Consent dialog shown, waiting for response");
+}
+
+void CloseConsentDialog() {
+    std::string pkt;
+    pkt += (char)0x30;  // opcode: ShowDialog
+    pkt += (char)0x0A;  // DialogType::CloseDialog
+    pkt += (char)0x00;  // padding
+    InjectServerPacket(pkt);
+}
+
+void ResetConsentState() {
+    g_consentDialogActive = false;
+    g_pendingConn = nullptr;
+    g_pendingOrigin.clear();
+}
+
+// =============================================================================
 // Hooks (__fastcall with dummy edx to intercept __thiscall)
 // =============================================================================
+// Returns true if the packet should be suppressed (not sent to the game server)
+bool ShouldSuppressClientPacket(const BYTE* data, DWORD size) {
+    if (size < 1) return false;
+
+    // Log all 0x3A packets
+    if (data[0] == 0x3A) {
+        std::string hex;
+        for (DWORD i = 0; i < size && i < 20; i++) {
+            char buf[4];
+            snprintf(buf, sizeof(buf), "%02X ", data[i]);
+            hex += buf;
+        }
+        LogToFile("DialogChoice packet: " + hex + " size=" + std::to_string(size)
+            + " consentActive=" + std::to_string(g_consentDialogActive));
+    }
+
+    // Intercept dialog response (opcode 0x3A) for our consent dialog
+    if (g_consentDialogActive && data[0] == 0x3A && size >= 10) {
+        // Body after opcode: EntityType(1) + EntityId(4) + PursuitId(2) + StepId(2)
+        uint16_t pursuitId = ReadBE16(data + 6);
+        LogToFile("DialogChoice pursuitId=" + std::to_string(pursuitId)
+            + " expected=" + std::to_string(CONSENT_PURSUIT_ID));
+        if (pursuitId != CONSENT_PURSUIT_ID) return false;
+
+        bool accepted = false;
+        if (size >= 12) {
+            BYTE argsType = data[10];
+            BYTE menuChoice = data[11];
+            accepted = (argsType == 0x01 && menuChoice == 1);  // "Yes"
+            LogToFile("DialogChoice argsType=" + std::to_string(argsType)
+                + " menuChoice=" + std::to_string(menuChoice)
+                + " accepted=" + std::to_string(accepted));
+        } else {
+            LogToFile("DialogChoice: no args (dialog closed)");
+        }
+
+        CloseConsentDialog();
+
+        if (accepted && g_pendingConn) {
+            LogToFile("Consent accepted, promoting connection");
+            g_clientConn = g_pendingConn;
+            std::lock_guard<std::mutex> lock(charDataMutex);
+            if (!charName.empty()) {
+                ReplayCharDataToBeryl(g_clientConn);
+            }
+        } else if (g_pendingConn) {
+            LogToFile("Consent rejected, closing pending connection");
+            g_pendingConn->is_closing = 1;
+        }
+
+        ResetConsentState();
+        LogToFile("Suppressing dialog packet");
+        return true;
+    }
+
+    return false;
+}
+
 void __fastcall HookedGameSend(void* thisPtr, void* /*edx*/, const BYTE* data, DWORD size) {
     g_sendThis = thisPtr;
+    if (ShouldSuppressClientPacket(data, size)) return;
     SendToBeryl(MSG_CLIENT, data, size);
     OrigGameSend(thisPtr, data, size);
 }
@@ -550,22 +678,39 @@ void QueueFileRequest(struct mg_connection* c, uint32_t requestId, const std::st
 // =============================================================================
 void ClientHandler(struct mg_connection* c, int ev, void* ev_data) {
     if (ev == MG_EV_HTTP_MSG) {
-        // LogToFile("Client WS: HTTP request received, upgrading to WebSocket");
-        mg_ws_upgrade(c, (struct mg_http_message*)ev_data, NULL);
+        struct mg_http_message* hm = (struct mg_http_message*)ev_data;
+        struct mg_str* origin = mg_http_get_header(hm, "Origin");
+        g_pendingOrigin = origin ? std::string(origin->buf, origin->len) : "unknown";
+        mg_ws_upgrade(c, hm, NULL);
     } else if (ev == MG_EV_WS_OPEN) {
-        // LogToFile("Client WS: Beryl connected");
-        g_clientConn = c;
-
-        // Send current character data so Beryl has it immediately
-        std::lock_guard<std::mutex> lock(charDataMutex);
-        if (!charName.empty()) {
-            ReplayCharDataToBeryl(c);
+        // Close any previous pending connection
+        if (g_pendingConn) {
+            g_pendingConn->is_closing = 1;
+            ResetConsentState();
         }
+
+        // If already connected, reject new connection
+        if (g_clientConn) {
+            c->is_closing = 1;
+            return;
+        }
+
+        // If not logged in, can't show dialog — reject
+        if (!g_recvThis) {
+            c->is_closing = 1;
+            return;
+        }
+
+        g_pendingConn = c;
+        ShowConsentDialog(g_pendingOrigin);
     } else if (ev == MG_EV_WS_MSG) {
         struct mg_ws_message* wm = (struct mg_ws_message*)ev_data;
         if (wm->data.len < 1) return;
 
         BYTE msgType = (BYTE)wm->data.buf[0];
+
+        // Only allow MSG_BECOME_REG from unapproved connections
+        if (c != g_clientConn && msgType != MSG_BECOME_REG) return;
 
         if (msgType == MSG_BECOME_REG) {
             if (!isRegistry) {
@@ -663,8 +808,13 @@ void ClientHandler(struct mg_connection* c, int ev, void* ev_data) {
         // LogToFile(std::string("Client error: ") + (const char*)ev_data);
     } else if (ev == MG_EV_CLOSE) {
         if (c == g_clientConn) {
-            // LogToFile("Client WS: Beryl disconnected");
             g_clientConn = nullptr;
+            if (c == g_fileSendConn) {
+                g_fileSendConn = nullptr;
+                g_fileQueue.clear();
+            }
+        } else if (c == g_pendingConn) {
+            ResetConsentState();
         }
     }
 }
