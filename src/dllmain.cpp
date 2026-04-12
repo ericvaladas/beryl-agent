@@ -81,6 +81,7 @@ constexpr BYTE MSG_WALK         = 0x03;  // walk command (direction byte)
 constexpr BYTE MSG_READ_MEMORY  = 0x04;  // read memory via pointer chain
 constexpr BYTE MSG_WRITE_MEMORY = 0x05;  // write memory via pointer chain
 constexpr BYTE MSG_BECOME_REG   = 0x06;  // become registry server
+constexpr BYTE MSG_READY        = 0x07;  // connection approved, client may proceed
 
 // DLL's directory (Dark Ages install dir), used for serving game files over WS
 std::string g_dllDirectory;
@@ -485,16 +486,8 @@ void ShowConsentDialog(const std::string& origin) {
     WriteString8(pkt, "Yes");
     WriteString8(pkt, "No");
 
-    std::string hex;
-    for (size_t i = 0; i < pkt.size(); i++) {
-        char buf[4];
-        snprintf(buf, sizeof(buf), "%02X ", (BYTE)pkt[i]);
-        hex += buf;
-    }
-    LogToFile("ShowConsentDialog packet: " + hex);
     InjectServerPacket(pkt);
     g_consentDialogActive = true;
-    LogToFile("Consent dialog shown, waiting for response");
 }
 
 void CloseConsentDialog() {
@@ -518,24 +511,10 @@ void ResetConsentState() {
 bool ShouldSuppressClientPacket(const BYTE* data, DWORD size) {
     if (size < 1) return false;
 
-    // Log all 0x3A packets
-    if (data[0] == 0x3A) {
-        std::string hex;
-        for (DWORD i = 0; i < size && i < 20; i++) {
-            char buf[4];
-            snprintf(buf, sizeof(buf), "%02X ", data[i]);
-            hex += buf;
-        }
-        LogToFile("DialogChoice packet: " + hex + " size=" + std::to_string(size)
-            + " consentActive=" + std::to_string(g_consentDialogActive));
-    }
-
     // Intercept dialog response (opcode 0x3A) for our consent dialog
     if (g_consentDialogActive && data[0] == 0x3A && size >= 10) {
         // Body after opcode: EntityType(1) + EntityId(4) + PursuitId(2) + StepId(2)
         uint16_t pursuitId = ReadBE16(data + 6);
-        LogToFile("DialogChoice pursuitId=" + std::to_string(pursuitId)
-            + " expected=" + std::to_string(CONSENT_PURSUIT_ID));
         if (pursuitId != CONSENT_PURSUIT_ID) return false;
 
         bool accepted = false;
@@ -543,29 +522,23 @@ bool ShouldSuppressClientPacket(const BYTE* data, DWORD size) {
             BYTE argsType = data[10];
             BYTE menuChoice = data[11];
             accepted = (argsType == 0x01 && menuChoice == 1);  // "Yes"
-            LogToFile("DialogChoice argsType=" + std::to_string(argsType)
-                + " menuChoice=" + std::to_string(menuChoice)
-                + " accepted=" + std::to_string(accepted));
-        } else {
-            LogToFile("DialogChoice: no args (dialog closed)");
         }
 
         CloseConsentDialog();
 
         if (accepted && g_pendingConn) {
-            LogToFile("Consent accepted, promoting connection");
             g_clientConn = g_pendingConn;
+            BYTE ready = MSG_READY;
+            mg_ws_send(g_clientConn, (const char*)&ready, 1, WEBSOCKET_OP_BINARY);
             std::lock_guard<std::mutex> lock(charDataMutex);
             if (!charName.empty()) {
                 ReplayCharDataToBeryl(g_clientConn);
             }
         } else if (g_pendingConn) {
-            LogToFile("Consent rejected, closing pending connection");
             g_pendingConn->is_closing = 1;
         }
 
         ResetConsentState();
-        LogToFile("Suppressing dialog packet");
         return true;
     }
 
