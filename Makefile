@@ -51,7 +51,7 @@ OBJS := $(patsubst $(SRC_DIR)/%.cpp, $(BUILD_DIR)/%.o, $(SRCS))
 
 TARGET := $(BUILD_DIR)/wininet.dll
 
-.PHONY: all clean distclean deps
+.PHONY: all clean distclean deps format
 
 all: $(TARGET)
 
@@ -84,6 +84,9 @@ $(BUILD_DIR)/detours:
 deps:
 	mkdir -p $(DEPS_DIR)
 	[ -d $(DEPS_DIR)/Detours ] || git clone --depth 1 https://github.com/microsoft/Detours.git $(DEPS_DIR)/Detours
+
+format:
+	clang-format -i $(SRC_DIR)/*.cpp $(SRC_DIR)/*.h
 
 clean:
 	rm -rf $(BUILD_DIR)

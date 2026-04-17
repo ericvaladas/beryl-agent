@@ -9,4 +9,4 @@ void TryRegister();
 void Deregister();
 
 // Replay accumulated character state over a specific Beryl client connection.
-void ReplayCharDataToBeryl(struct mg_connection* c);
+void ReplayCharDataToBeryl(struct mg_connection *c);

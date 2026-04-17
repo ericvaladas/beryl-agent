@@ -1,0 +1,9 @@
+BasedOnStyle: LLVM
+AlignAfterOpenBracket: BlockIndent
+AlignOperands: DontAlign
+AlignTrailingComments: false
+AlignConsecutiveAssignments: None
+AlignConsecutiveDeclarations: None
+BinPackArguments: false
+BinPackParameters: false
+SortIncludes: false
