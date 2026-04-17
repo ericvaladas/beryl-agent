@@ -250,18 +250,6 @@ std::string ReadString8(const BYTE* data, DWORD size, DWORD& pos) {
 }
 
 // =============================================================================
-// Character name from game memory
-// =============================================================================
-std::string ReadCharName() {
-    HMODULE hModule = GetModuleHandle(NULL);
-    if (!hModule) return "";
-    char* addr = (char*)((DWORD)hModule + 0x33D910);
-    char buf[65] = {0};
-    memcpy(buf, addr, 64);
-    return std::string(buf);
-}
-
-// =============================================================================
 // Registration payload + deferred registration
 // =============================================================================
 json BuildRegistrationPayload() {
@@ -357,11 +345,18 @@ void ParseServerPacket(const BYTE* data, DWORD size) {
     std::lock_guard<std::mutex> lock(charDataMutex);
 
     switch (opcode) {
+    case 0x03: { // redirect -- extract character name
+        if (size < 10) break;
+        DWORD pos = 9; // skip opcode(1) + Address(4) + Port(2) + RemainingCount(1) + Seed(1)
+        BYTE keyLength = data[pos++];
+        pos += keyLength;
+        charName = ReadString8(data, size, pos);
+        break;
+    }
     case 0x05: { // playerId -- signals login complete
         if (size >= 5) {
             storedPackets[opcode] = std::string((char*)data, size);
             charId = ReadBE32(data + 1);
-            charName = ReadCharName();
             TryRegister();
         }
         break;
@@ -1166,7 +1161,6 @@ BOOL APIENTRY DllMain(HINSTANCE hInst, DWORD reason, LPVOID) {
             {
                 std::lock_guard<std::mutex> lock(charDataMutex);
                 if (!storedStats.empty()) {
-                    charName = ReadCharName();
                     TryRegister();
                 }
             }
