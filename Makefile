@@ -10,7 +10,7 @@ DEPS_DIR  := deps
 
 COMMON_DEFS := -DWIN32_LEAN_AND_MEAN -DMG_ENABLE_LOG=0 -D__MINGW32__
 
-CXXFLAGS := -std=c++14 -Os -Wall -fno-rtti \
+CXXFLAGS := -std=c++17 -Os -Wall -fno-rtti \
             -ffunction-sections -fdata-sections -flto \
             $(COMMON_DEFS)
 
@@ -55,7 +55,7 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp | $(BUILD_DIR)
 $(MONGOOSE_OBJ): $(SRC_DIR)/mongoose.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(MONGOOSE_DEFS) -c $< -o $@
 
-DETOURS_CXXFLAGS := -std=c++14 -Os -Wall -fno-rtti \
+DETOURS_CXXFLAGS := -std=c++17 -Os -Wall -fno-rtti \
                     -ffunction-sections -fdata-sections \
                     $(COMMON_DEFS)
 
