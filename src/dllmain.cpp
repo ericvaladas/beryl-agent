@@ -130,6 +130,11 @@ std::map<int, std::string> storedEquipment;          // slot -> raw 0x37 packet
 std::map<uint32_t, std::string> storedEntities;      // entityId -> per-entity byte slice from 0x07
 std::map<uint32_t, std::string> storedShowUsers;     // entityId -> full raw 0x33 packet
 
+// Currently displayed server-sent dialog (0x30/0x31). Replayed after consent dialog closes
+// so we restore whatever the server still thinks is on screen.
+std::string g_currentDialog;
+std::string g_suspendedDialog;
+
 // =============================================================================
 // Mongoose networking state
 // =============================================================================
@@ -439,6 +444,8 @@ void ParseServerPacket(const BYTE* data, DWORD size) {
         storedEquipment.clear();
         storedEntities.clear();
         storedShowUsers.clear();
+        g_currentDialog.clear();
+        g_suspendedDialog.clear();
         break;
     }
     case 0x15: // mapInfo -- store and clear entities (new map)
@@ -548,6 +555,17 @@ void ParseServerPacket(const BYTE* data, DWORD size) {
         }
         break;
     }
+    case 0x30: { // ShowDialog -- track for consent dialog replay
+        if (size >= 2 && data[1] == 0x0A) {
+            g_currentDialog.clear();
+        } else {
+            g_currentDialog.assign((char*)data, size);
+        }
+        break;
+    }
+    case 0x31: // ShowDialogMenu -- track for consent dialog replay
+        g_currentDialog.assign((char*)data, size);
+        break;
     case 0x0E: { // removeEntity -- erase from both maps
         if (size < 5) break; // opcode(1)+Id(4)
         uint32_t entityId = ReadBE32(data + 1);
@@ -569,6 +587,11 @@ void InjectServerPacket(const std::string& pkt) {
 }
 
 void ShowConsentDialog(const std::string& origin) {
+    {
+        std::lock_guard<std::mutex> lock(charDataMutex);
+        g_suspendedDialog = g_currentDialog;
+    }
+
     std::string pkt;
     pkt += (char)0x30;        // opcode: ShowDialog
     pkt += (char)0x02;        // DialogType::Menu
@@ -675,6 +698,15 @@ bool ShouldSuppressClientPacket(const BYTE* data, DWORD size) {
 
         CloseConsentDialog();
 
+        std::string toReplay;
+        {
+            std::lock_guard<std::mutex> lock(charDataMutex);
+            toReplay.swap(g_suspendedDialog);
+        }
+        if (!toReplay.empty()) {
+            InjectServerPacket(toReplay);
+        }
+
         if (accepted && g_pendingConn) {
             g_allowedOrigins.insert(g_pendingOrigin);
             SaveAllowedOrigins();
@@ -685,6 +717,13 @@ bool ShouldSuppressClientPacket(const BYTE* data, DWORD size) {
 
         ResetConsentState();
         return true;
+    }
+
+    // Track real (non-consent) dialog responses so we stop tracking a dialog
+    // the client has dismissed.
+    if (data[0] == 0x3A) {
+        std::lock_guard<std::mutex> lock(charDataMutex);
+        g_currentDialog.clear();
     }
 
     return false;
