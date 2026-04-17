@@ -36,7 +36,17 @@ DETOURS_LIB := $(BUILD_DIR)/libdetours.a
 MONGOOSE_OBJ := $(BUILD_DIR)/mongoose.o
 
 # Project sources
-SRCS := $(SRC_DIR)/dllmain.cpp $(SRC_DIR)/wininet_proxy.cpp
+SRCS := $(SRC_DIR)/dllmain.cpp \
+        $(SRC_DIR)/state.cpp \
+        $(SRC_DIR)/packet_io.cpp \
+        $(SRC_DIR)/packet_parse.cpp \
+        $(SRC_DIR)/game_hooks.cpp \
+        $(SRC_DIR)/auth_dialog.cpp \
+        $(SRC_DIR)/registration.cpp \
+        $(SRC_DIR)/ws_client.cpp \
+        $(SRC_DIR)/ws_registry.cpp \
+        $(SRC_DIR)/server_setup.cpp \
+        $(SRC_DIR)/wininet_proxy.cpp
 OBJS := $(patsubst $(SRC_DIR)/%.cpp, $(BUILD_DIR)/%.o, $(SRCS))
 
 TARGET := $(BUILD_DIR)/wininet.dll
