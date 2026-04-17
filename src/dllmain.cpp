@@ -118,19 +118,17 @@ std::string charName;
 bool charRegistered = false;
 uint32_t charId = 0;
 
-struct SpellInfo {
-    int slot, icon, targetType, lines;
-    std::string name, prompt;
-};
-struct ItemInfo {
-    int slot, sprite, color;
-    std::string name;
-    uint32_t quantity;
-};
-
-std::map<int, SpellInfo> charSpells;
-std::map<int, ItemInfo> charInventory;
-uint32_t charCurrentHP = 0, charMaxHP = 0, charCurrentMP = 0, charMaxMP = 0;
+// Raw packet storage for replay
+// storedStats: fixed 38-byte packet with bitmask 0x30 (both 0x20 and 0x10 blocks)
+// Layout: [0x08][0x30][28-byte 0x20 block][8-byte 0x10 block]
+std::string storedStats;
+std::map<BYTE, std::string> storedPackets;           // opcode -> raw packet bytes
+std::map<int, std::string> storedSpells;             // slot -> raw 0x17 packet
+std::map<int, std::string> storedItems;              // slot -> raw 0x0F packet
+std::map<int, std::string> storedSkills;             // slot -> raw 0x2C packet
+std::map<int, std::string> storedEquipment;          // slot -> raw 0x37 packet
+std::map<uint32_t, std::string> storedEntities;      // entityId -> per-entity byte slice from 0x07
+std::map<uint32_t, std::string> storedShowUsers;     // entityId -> full raw 0x33 packet
 
 // =============================================================================
 // Mongoose networking state
@@ -271,54 +269,6 @@ json BuildRegistrationPayload() {
     return {{"pid", pid}, {"port", clientPort}, {"name", charName}};
 }
 
-// =============================================================================
-// Packet reconstruction (rebuild server packets from parsed state)
-// =============================================================================
-std::string BuildPlayerIdPacket() {
-    std::string pkt;
-    pkt += (char)0x05;
-    WriteBE32(pkt, charId);
-    return pkt;
-}
-
-std::string BuildStatsPacket() {
-    std::string pkt;
-    pkt += (char)0x08;
-    pkt += (char)0x30;  // bitmask: 0x20 (max stats) | 0x10 (current stats)
-    // 0x20 block: 28 bytes, maxHP at offset +5, maxMP at +9
-    pkt.append(5, '\0');
-    WriteBE32(pkt, charMaxHP);
-    WriteBE32(pkt, charMaxMP);
-    pkt.append(15, '\0');  // remaining bytes to reach 28 total (5+4+4+15=28)
-    // 0x10 block: 8 bytes
-    WriteBE32(pkt, charCurrentHP);
-    WriteBE32(pkt, charCurrentMP);
-    return pkt;
-}
-
-std::string BuildSpellPacket(const SpellInfo& sp) {
-    std::string pkt;
-    pkt += (char)0x17;
-    pkt += (char)(uint8_t)sp.slot;
-    WriteBE16(pkt, (uint16_t)sp.icon);
-    pkt += (char)(uint8_t)sp.targetType;
-    WriteString8(pkt, sp.name);
-    WriteString8(pkt, sp.prompt);
-    pkt += (char)(uint8_t)sp.lines;
-    return pkt;
-}
-
-std::string BuildItemPacket(const ItemInfo& item) {
-    std::string pkt;
-    pkt += (char)0x0F;
-    pkt += (char)(uint8_t)item.slot;
-    WriteBE16(pkt, (uint16_t)item.sprite);
-    pkt += (char)(uint8_t)item.color;
-    WriteString8(pkt, item.name);
-    WriteBE32(pkt, item.quantity);
-    return pkt;
-}
-
 void SendPacketToBeryl(struct mg_connection* c, const std::string& pkt) {
     std::string frame(1 + pkt.size(), '\0');
     frame[0] = (char)MSG_SERVER;
@@ -328,13 +278,32 @@ void SendPacketToBeryl(struct mg_connection* c, const std::string& pkt) {
 
 void ReplayCharDataToBeryl(struct mg_connection* c) {
     // Caller must hold charDataMutex
-    SendPacketToBeryl(c, BuildPlayerIdPacket());
-    SendPacketToBeryl(c, BuildStatsPacket());
-    for (auto it = charSpells.begin(); it != charSpells.end(); ++it) {
-        SendPacketToBeryl(c, BuildSpellPacket(it->second));
+    // Replay stored raw packets (player id, map info, location, light level, doors, metadata)
+    for (auto it = storedPackets.begin(); it != storedPackets.end(); ++it) {
+        SendPacketToBeryl(c, it->second);
     }
-    for (auto it = charInventory.begin(); it != charInventory.end(); ++it) {
-        SendPacketToBeryl(c, BuildItemPacket(it->second));
+
+    if (!storedStats.empty()) SendPacketToBeryl(c, storedStats);
+
+    for (auto& [slot, pkt] : storedSpells)  SendPacketToBeryl(c, pkt);
+    for (auto& [slot, pkt] : storedItems)   SendPacketToBeryl(c, pkt);
+    for (auto& [slot, pkt] : storedSkills)  SendPacketToBeryl(c, pkt);
+    for (auto& [slot, pkt] : storedEquipment) SendPacketToBeryl(c, pkt);
+
+    // Replay stored entities as a single 0x07 packet
+    if (!storedEntities.empty()) {
+        std::string pkt;
+        pkt += (char)0x07;
+        WriteBE16(pkt, (uint16_t)storedEntities.size());
+        for (auto it = storedEntities.begin(); it != storedEntities.end(); ++it) {
+            pkt += it->second;
+        }
+        SendPacketToBeryl(c, pkt);
+    }
+
+    // Replay stored ShowUser packets
+    for (auto it = storedShowUsers.begin(); it != storedShowUsers.end(); ++it) {
+        SendPacketToBeryl(c, it->second);
     }
 }
 
@@ -359,6 +328,26 @@ void TryRegister() {
 }
 
 // =============================================================================
+// Walk destination helper
+// =============================================================================
+void ComputeWalkDestination(uint16_t originX, uint16_t originY, BYTE direction, uint16_t& destX, uint16_t& destY) {
+    destX = originX;
+    destY = originY;
+    switch (direction) {
+    case 0: destY = originY - 1; break; // Up
+    case 1: destX = originX + 1; break; // Right
+    case 2: destY = originY + 1; break; // Down
+    case 3: destX = originX - 1; break; // Left
+    }
+}
+
+// Write a BE16 value into a string at a given offset
+void PatchBE16(std::string& buf, size_t offset, uint16_t v) {
+    buf[offset]     = (char)(v >> 8);
+    buf[offset + 1] = (char)(v & 0xFF);
+}
+
+// =============================================================================
 // Server packet parsing (accumulate character data)
 // =============================================================================
 void ParseServerPacket(const BYTE* data, DWORD size) {
@@ -370,69 +359,61 @@ void ParseServerPacket(const BYTE* data, DWORD size) {
     switch (opcode) {
     case 0x05: { // playerId -- signals login complete
         if (size >= 5) {
+            storedPackets[opcode] = std::string((char*)data, size);
             charId = ReadBE32(data + 1);
             charName = ReadCharName();
             TryRegister();
         }
         break;
     }
-    case 0x08: { // statistics
+    case 0x08: { // statistics -- patch into stored 0x30 packet
         if (size < 2) break;
         BYTE bitmask = data[1];
         DWORD pos = 2;
 
+        // Initialize storedStats if empty: [0x08][0x30][28 zeros][8 zeros] = 38 bytes
+        if (storedStats.empty()) {
+            storedStats.assign(38, '\0');
+            storedStats[0] = (char)0x08;
+            storedStats[1] = (char)0x30;
+        }
+
         if ((bitmask & 0x20) == 0x20) {
             if (pos + 28 > size) break;
-            charMaxHP = ReadBE32(data + pos + 5);
-            charMaxMP = ReadBE32(data + pos + 9);
+            memcpy(&storedStats[2], data + pos, 28);
             pos += 28;
         }
         if ((bitmask & 0x10) == 0x10) {
             if (pos + 8 > size) break;
-            charCurrentHP = ReadBE32(data + pos);
-            charCurrentMP = ReadBE32(data + pos + 4);
+            memcpy(&storedStats[30], data + pos, 8);
         }
         break;
     }
-    case 0x18: { // removeSpell
-        if (size >= 2) {
-            int slot = data[1];
-            charSpells.erase(slot);
-        }
-        break;
-    }
-    case 0x17: { // loadSpell
+    case 0x17: // addSpell -- store raw packet keyed by slot
+    case 0x0F: // addItem
+    case 0x2C: // addSkill
+    case 0x37: // setEquipment
+    {
         if (size < 2) break;
-        DWORD pos = 1;
-        int slot = data[pos++];
-        if (pos + 3 > size) break;
-        int icon = ReadBE16(data + pos); pos += 2;
-        int targetType = data[pos++];
-        std::string name = ReadString8(data, size, pos);
-        std::string prompt = ReadString8(data, size, pos);
-        if (pos >= size) break;
-        int lines = data[pos++];
-        charSpells[slot] = {slot, icon, targetType, lines, name, prompt};
+        int slot = data[1];
+        std::string raw((char*)data, size);
+        if (opcode == 0x17)      storedSpells[slot] = raw;
+        else if (opcode == 0x0F) storedItems[slot] = raw;
+        else if (opcode == 0x2C) storedSkills[slot] = raw;
+        else                     storedEquipment[slot] = raw;
         break;
     }
-    case 0x0F: { // addItemToPane
+    case 0x18: // removeSpell
+    case 0x10: // removeItem
+    case 0x2D: // removeSkill
+    case 0x38: // removeEquipment
+    {
         if (size < 2) break;
-        DWORD pos = 1;
-        int slot = data[pos++];
-        if (pos + 3 > size) break;
-        int sprite = ReadBE16(data + pos); pos += 2;
-        int color = data[pos++];
-        std::string name = ReadString8(data, size, pos);
-        if (pos + 4 > size) break;
-        uint32_t quantity = ReadBE32(data + pos); pos += 4;
-        charInventory[slot] = {slot, sprite, color, name, quantity};
-        break;
-    }
-    case 0x10: { // removeItemFromPane
-        if (size >= 2) {
-            int slot = data[1];
-            charInventory.erase(slot);
-        }
+        int slot = data[1];
+        if (opcode == 0x18)      storedSpells.erase(slot);
+        else if (opcode == 0x10) storedItems.erase(slot);
+        else if (opcode == 0x2D) storedSkills.erase(slot);
+        else                     storedEquipment.erase(slot);
         break;
     }
     case 0x4C: { // logout -- deregister and reset all accumulated state
@@ -447,10 +428,129 @@ void ParseServerPacket(const BYTE* data, DWORD size) {
         }
         charName.clear();
         charId = 0;
-        charSpells.clear();
-        charInventory.clear();
-        charCurrentHP = charMaxHP = charCurrentMP = charMaxMP = 0;
         charRegistered = false;
+        storedPackets.clear();
+        storedStats.clear();
+        storedSpells.clear();
+        storedItems.clear();
+        storedSkills.clear();
+        storedEquipment.clear();
+        storedEntities.clear();
+        storedShowUsers.clear();
+        break;
+    }
+    case 0x15: // mapInfo -- store and clear entities (new map)
+        storedPackets[opcode] = std::string((char*)data, size);
+        storedEntities.clear();
+        storedShowUsers.clear();
+        break;
+    case 0x04: // mapLocation
+    case 0x20: // lightLevel
+    case 0x32: // mapDoor
+    case 0x6f: // metadata
+        storedPackets[opcode] = std::string((char*)data, size);
+        break;
+    case 0x33: { // showUser -- store keyed by entity ID
+        if (size >= 10) {
+            uint32_t entityId = ReadBE32(data + 6);
+            storedShowUsers[entityId] = std::string((char*)data, size);
+        }
+        break;
+    }
+    case 0x07: { // addEntity -- split into per-entity slices keyed by ID
+        if (size < 3) break;
+        uint16_t entityCount = ReadBE16(data + 1);
+        DWORD pos = 3;
+        for (uint16_t i = 0; i < entityCount; i++) {
+            DWORD entityStart = pos;
+            if (pos + 10 > size) break; // X(2)+Y(2)+Id(4)+Sprite(2)
+            uint32_t entityId = ReadBE32(data + pos + 4);
+            uint16_t sprite = ReadBE16(data + pos + 8);
+            pos += 10;
+            if (sprite & 0x4000) { // creature
+                if (pos + 7 > size) break; // Unknown(4)+Dir(1)+Unknown(1)+CreatureType(1)
+                BYTE creatureType = data[pos + 6];
+                pos += 7;
+                if (creatureType == 2) { // Mundane -- has String8 name
+                    if (pos >= size) break;
+                    uint8_t nameLen = data[pos];
+                    pos += 1 + nameLen;
+                }
+            } else if (sprite & 0x8000) { // item
+                pos += 3; // Color(1)+Unknown(2)
+            } else {
+                break; // unknown entity type
+            }
+            if (pos > size) break;
+            storedEntities[entityId] = std::string((char*)data + entityStart, pos - entityStart);
+        }
+        break;
+    }
+    case 0x0B: { // walkResponse -- update current player's stored ShowUser
+        if (size < 6) break; // opcode(1)+Dir(1)+PrevX(2)+PrevY(2)
+        BYTE direction = data[1];
+        uint16_t originX = ReadBE16(data + 2);
+        uint16_t originY = ReadBE16(data + 4);
+        uint16_t destX, destY;
+        ComputeWalkDestination(originX, originY, direction, destX, destY);
+
+        auto sit = storedShowUsers.find(charId);
+        if (sit != storedShowUsers.end() && sit->second.size() >= 10) {
+            PatchBE16(sit->second, 1, destX);
+            PatchBE16(sit->second, 3, destY);
+            sit->second[5] = (char)direction;
+        }
+        break;
+    }
+    case 0x0C: { // entityWalk -- update stored entity position and direction
+        if (size < 10) break; // opcode(1)+Id(4)+OriginX(2)+OriginY(2)+Dir(1)
+        uint32_t entityId = ReadBE32(data + 1);
+        uint16_t originX = ReadBE16(data + 5);
+        uint16_t originY = ReadBE16(data + 7);
+        BYTE direction = data[9];
+        uint16_t destX, destY;
+        ComputeWalkDestination(originX, originY, direction, destX, destY);
+
+        auto eit = storedEntities.find(entityId);
+        if (eit != storedEntities.end() && eit->second.size() >= 15) {
+            uint16_t sprite = ReadBE16((const BYTE*)eit->second.data() + 8);
+            if (sprite & 0x4000) { // creature
+                PatchBE16(eit->second, 0, destX);
+                PatchBE16(eit->second, 2, destY);
+                eit->second[14] = (char)direction;
+            }
+        }
+        auto sit = storedShowUsers.find(entityId);
+        if (sit != storedShowUsers.end() && sit->second.size() >= 10) {
+            PatchBE16(sit->second, 1, destX);
+            PatchBE16(sit->second, 3, destY);
+            sit->second[5] = (char)direction;
+        }
+        break;
+    }
+    case 0x11: { // entityTurn -- update stored entity direction
+        if (size < 6) break; // opcode(1)+Id(4)+Dir(1)
+        uint32_t entityId = ReadBE32(data + 1);
+        BYTE direction = data[5];
+
+        auto eit = storedEntities.find(entityId);
+        if (eit != storedEntities.end() && eit->second.size() >= 15) {
+            uint16_t sprite = ReadBE16((const BYTE*)eit->second.data() + 8);
+            if (sprite & 0x4000) { // creature
+                eit->second[14] = (char)direction;
+            }
+        }
+        auto sit = storedShowUsers.find(entityId);
+        if (sit != storedShowUsers.end() && sit->second.size() >= 6) {
+            sit->second[5] = (char)direction;
+        }
+        break;
+    }
+    case 0x0E: { // removeEntity -- erase from both maps
+        if (size < 5) break; // opcode(1)+Id(4)
+        uint32_t entityId = ReadBE32(data + 1);
+        storedEntities.erase(entityId);
+        storedShowUsers.erase(entityId);
         break;
     }
     }
@@ -1065,7 +1165,7 @@ BOOL APIENTRY DllMain(HINSTANCE hInst, DWORD reason, LPVOID) {
             // Check if already logged in
             {
                 std::lock_guard<std::mutex> lock(charDataMutex);
-                if (charMaxHP > 0) {
+                if (!storedStats.empty()) {
                     charName = ReadCharName();
                     TryRegister();
                 }
