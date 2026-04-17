@@ -130,7 +130,7 @@ std::map<int, std::string> storedEquipment;          // slot -> raw 0x37 packet
 std::map<uint32_t, std::string> storedEntities;      // entityId -> per-entity byte slice from 0x07
 std::map<uint32_t, std::string> storedShowUsers;     // entityId -> full raw 0x33 packet
 
-// Currently displayed server-sent dialog (0x30/0x31). Replayed after consent dialog closes
+// Currently displayed server-sent dialog (0x30/0x31). Replayed after auth dialog closes
 // so we restore whatever the server still thinks is on screen.
 std::string g_currentDialog;
 std::string g_suspendedDialog;
@@ -151,13 +151,13 @@ int clientPort = 0;
 std::vector<json> registeredClients;
 std::map<struct mg_connection*, DWORD> registryConnPid;  // track which PID registered from which connection
 
-// Connection consent state
+// Connection authorization state
 struct mg_connection* g_pendingConn = nullptr;
 std::string g_pendingOrigin;
-bool g_consentDialogActive = false;
-constexpr uint16_t CONSENT_PURSUIT_ID = 0xFFFF;
-constexpr uint32_t CONSENT_ENTITY_ID = 0xFFFFFFFF;
-constexpr uint16_t CONSENT_ENTITY_SPRITE = 0x80E8;
+bool g_authDialogActive = false;
+constexpr uint16_t AUTH_PURSUIT_ID = 0xFFFF;
+constexpr uint32_t AUTH_ENTITY_ID = 0xFFFFFFFF;
+constexpr uint16_t AUTH_ENTITY_SPRITE = 0x80E8;
 
 std::set<std::string> g_allowedOrigins;
 std::string g_allowedOriginsPath;
@@ -555,7 +555,7 @@ void ParseServerPacket(const BYTE* data, DWORD size) {
         }
         break;
     }
-    case 0x30: { // ShowDialog -- track for consent dialog replay
+    case 0x30: { // ShowDialog -- track for auth dialog replay
         if (size >= 2 && data[1] == 0x0A) {
             g_currentDialog.clear();
         } else {
@@ -563,7 +563,7 @@ void ParseServerPacket(const BYTE* data, DWORD size) {
         }
         break;
     }
-    case 0x31: // ShowDialogMenu -- track for consent dialog replay
+    case 0x31: // ShowDialogMenu -- track for auth dialog replay
         g_currentDialog.assign((char*)data, size);
         break;
     case 0x0E: { // removeEntity -- erase from both maps
@@ -577,7 +577,7 @@ void ParseServerPacket(const BYTE* data, DWORD size) {
 }
 
 // =============================================================================
-// Connection consent dialog
+// Connection authorization dialog
 // =============================================================================
 void InjectServerPacket(const std::string& pkt) {
     void* thisPtr = g_recvThis;
@@ -586,7 +586,7 @@ void InjectServerPacket(const std::string& pkt) {
     }
 }
 
-void ShowConsentDialog(const std::string& origin) {
+void ShowAuthDialog(const std::string& origin) {
     {
         std::lock_guard<std::mutex> lock(charDataMutex);
         g_suspendedDialog = g_currentDialog;
@@ -596,14 +596,14 @@ void ShowConsentDialog(const std::string& origin) {
     pkt += (char)0x30;        // opcode: ShowDialog
     pkt += (char)0x02;        // DialogType::Menu
     pkt += (char)0x00;        // EntityType
-    WriteBE32(pkt, CONSENT_ENTITY_ID);
+    WriteBE32(pkt, AUTH_ENTITY_ID);
     pkt += (char)0x01;        // Unknown1
-    WriteBE16(pkt, CONSENT_ENTITY_SPRITE);
+    WriteBE16(pkt, AUTH_ENTITY_SPRITE);
     pkt += (char)0x00;        // Color
     pkt += (char)0x01;        // Unknown2
     WriteBE16(pkt, 0x0000);   // SpriteSecondary
     pkt += (char)0x00;        // ColorSecondary
-    WriteBE16(pkt, CONSENT_PURSUIT_ID);
+    WriteBE16(pkt, AUTH_PURSUIT_ID);
     WriteBE16(pkt, 0x0000);   // StepId
     pkt += (char)0x00;        // HasPreviousButton
     pkt += (char)0x00;        // HasNextButton
@@ -618,10 +618,10 @@ void ShowConsentDialog(const std::string& origin) {
     WriteString8(pkt, "No");
 
     InjectServerPacket(pkt);
-    g_consentDialogActive = true;
+    g_authDialogActive = true;
 }
 
-void CloseConsentDialog() {
+void CloseAuthDialog() {
     std::string pkt;
     pkt += (char)0x30;  // opcode: ShowDialog
     pkt += (char)0x0A;  // DialogType::CloseDialog
@@ -660,8 +660,8 @@ void SaveAllowedOrigins() {
     }
 }
 
-void ResetConsentState() {
-    g_consentDialogActive = false;
+void ResetAuthState() {
+    g_authDialogActive = false;
     g_pendingConn = nullptr;
     g_pendingOrigin.clear();
 }
@@ -683,11 +683,11 @@ void PromoteConnection(struct mg_connection* c) {
 bool ShouldSuppressClientPacket(const BYTE* data, DWORD size) {
     if (size < 1) return false;
 
-    // Intercept dialog response (opcode 0x3A) for our consent dialog
-    if (g_consentDialogActive && data[0] == 0x3A && size >= 10) {
+    // Intercept dialog response (opcode 0x3A) for our auth dialog
+    if (g_authDialogActive && data[0] == 0x3A && size >= 10) {
         // Body after opcode: EntityType(1) + EntityId(4) + PursuitId(2) + StepId(2)
         uint16_t pursuitId = ReadBE16(data + 6);
-        if (pursuitId != CONSENT_PURSUIT_ID) return false;
+        if (pursuitId != AUTH_PURSUIT_ID) return false;
 
         bool accepted = false;
         if (size >= 12) {
@@ -696,7 +696,7 @@ bool ShouldSuppressClientPacket(const BYTE* data, DWORD size) {
             accepted = (argsType == 0x01 && menuChoice == 1);  // "Yes"
         }
 
-        CloseConsentDialog();
+        CloseAuthDialog();
 
         std::string toReplay;
         {
@@ -715,11 +715,11 @@ bool ShouldSuppressClientPacket(const BYTE* data, DWORD size) {
             g_pendingConn->is_closing = 1;
         }
 
-        ResetConsentState();
+        ResetAuthState();
         return true;
     }
 
-    // Track real (non-consent) dialog responses so we stop tracking a dialog
+    // Track real (non-auth) dialog responses so we stop tracking a dialog
     // the client has dismissed.
     if (data[0] == 0x3A) {
         std::lock_guard<std::mutex> lock(charDataMutex);
@@ -843,7 +843,7 @@ void ClientHandler(struct mg_connection* c, int ev, void* ev_data) {
         // Close any previous pending connection
         if (g_pendingConn) {
             g_pendingConn->is_closing = 1;
-            ResetConsentState();
+            ResetAuthState();
         }
 
         // If already connected, reject new connection
@@ -865,7 +865,7 @@ void ClientHandler(struct mg_connection* c, int ev, void* ev_data) {
         }
 
         g_pendingConn = c;
-        ShowConsentDialog(g_pendingOrigin);
+        ShowAuthDialog(g_pendingOrigin);
     } else if (ev == MG_EV_WS_MSG) {
         struct mg_ws_message* wm = (struct mg_ws_message*)ev_data;
         if (wm->data.len < 1) return;
@@ -977,7 +977,7 @@ void ClientHandler(struct mg_connection* c, int ev, void* ev_data) {
                 g_fileQueue.clear();
             }
         } else if (c == g_pendingConn) {
-            ResetConsentState();
+            ResetAuthState();
         }
     }
 }
