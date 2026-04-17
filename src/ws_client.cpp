@@ -42,21 +42,27 @@ void SendFileResponse(
 void HandleFileRequest(
     struct mg_connection *c, uint32_t requestId, const std::string &relativePath
 ) {
-  if (relativePath.find("..") != std::string::npos) {
-    SendFileResponse(c, requestId, 0x02);
-    return;
-  }
-
   std::string winPath = relativePath;
   for (auto &ch : winPath) {
     if (ch == '/')
       ch = '\\';
   }
 
-  std::string filePath = g_dllDirectory + "\\" + winPath;
+  // Canonicalize the requested path and require it to sit under the DLL's
+  // directory. GetFullPathNameA collapses ".." and resolves absolute, UNC, and
+  // drive-relative paths — so one prefix check covers all the escape variants.
+  std::string joined = g_dllDirectory + "\\" + winPath;
+  char resolved[MAX_PATH];
+  DWORD rLen = GetFullPathNameA(joined.c_str(), MAX_PATH, resolved, NULL);
+  std::string basePrefix = g_dllDirectory + "\\";
+  if (rLen == 0 || rLen >= MAX_PATH ||
+      _strnicmp(resolved, basePrefix.c_str(), basePrefix.size()) != 0) {
+    SendFileResponse(c, requestId, 0x02);
+    return;
+  }
 
   HANDLE h = CreateFileA(
-      filePath.c_str(),
+      resolved,
       GENERIC_READ,
       FILE_SHARE_READ,
       NULL,
