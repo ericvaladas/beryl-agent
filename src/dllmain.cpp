@@ -295,6 +295,18 @@ void ReplayCharDataToBeryl(struct mg_connection* c) {
     }
 }
 
+void Deregister() {
+    if (!charRegistered) return;
+    if (isRegistry) {
+        RegistryRemoveClient(pid);
+    } else if (registryClientConnected && g_registryClientConn) {
+        json msg = {{"type", "deregister"}, {"pid", pid}};
+        std::string s = msg.dump();
+        mg_ws_send(g_registryClientConn, s.c_str(), s.size(), WEBSOCKET_OP_TEXT);
+    }
+    charRegistered = false;
+}
+
 void TryRegister() {
     // Caller must hold charDataMutex
     if (charRegistered || charName.empty()) return;
@@ -345,12 +357,16 @@ void ParseServerPacket(const BYTE* data, DWORD size) {
     std::lock_guard<std::mutex> lock(charDataMutex);
 
     switch (opcode) {
-    case 0x03: { // redirect -- extract character name
+    case 0x03: { // redirect -- extract character name, deregister if changed
         if (size < 10) break;
         DWORD pos = 9; // skip opcode(1) + Address(4) + Port(2) + RemainingCount(1) + Seed(1)
         BYTE keyLength = data[pos++];
         pos += keyLength;
-        charName = ReadString8(data, size, pos);
+        std::string newName = ReadString8(data, size, pos);
+        if (newName != charName) {
+            Deregister();
+        }
+        charName = newName;
         break;
     }
     case 0x05: { // playerId -- signals login complete
@@ -412,18 +428,9 @@ void ParseServerPacket(const BYTE* data, DWORD size) {
         break;
     }
     case 0x4C: { // logout -- deregister and reset all accumulated state
-        if (charRegistered) {
-            if (isRegistry) {
-                RegistryRemoveClient(pid);
-            } else if (registryClientConnected && g_registryClientConn) {
-                json msg = {{"type", "deregister"}, {"pid", pid}};
-                std::string s = msg.dump();
-                mg_ws_send(g_registryClientConn, s.c_str(), s.size(), WEBSOCKET_OP_TEXT);
-            }
-        }
+        Deregister();
         charName.clear();
         charId = 0;
-        charRegistered = false;
         storedPackets.clear();
         storedStats.clear();
         storedSpells.clear();
@@ -1190,13 +1197,7 @@ BOOL APIENTRY DllMain(HINSTANCE hInst, DWORD reason, LPVOID) {
         running = false;
 
         // Notify registry of our departure
-        if (isRegistry) {
-            RegistryRemoveClient(pid);
-        } else if (registryClientConnected && g_registryClientConn) {
-            json msg = {{"type", "deregister"}, {"pid", pid}};
-            std::string s = msg.dump();
-            mg_ws_send(g_registryClientConn, s.c_str(), s.size(), WEBSOCKET_OP_TEXT);
-        }
+        Deregister();
 
         if (wsThread && wsThread->joinable()) {
             wsThread->join();
