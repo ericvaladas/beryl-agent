@@ -1,6 +1,6 @@
-# Beryl Agent
+# beryl-agent
 
-Beryl Agent is a DLL that injects into Dark Ages, hooks the game's `send` and `recv` functions with Microsoft Detours, and relays packets between the game and the Beryl client over a WebSocket.
+A DLL that injects into Dark Ages, hooks the game's `send` and `recv` functions with Microsoft Detours, and relays packets between the game and a connected client over a WebSocket.
 
 Targets Dark Ages **7.41**. Other versions may have different memory offsets and are not supported.
 
