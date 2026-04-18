@@ -4,6 +4,12 @@ Beryl Agent is a DLL that injects into Dark Ages, hooks the game's `send` and `r
 
 Targets Dark Ages **7.41**. Other versions may have different memory offsets and are not supported.
 
+## Installation
+
+Download `wininet.dll` from the [latest release](../../releases/latest) and copy it into the Dark Ages game directory. Dark Ages will load it automatically on startup.
+
+To build from source instead, see below.
+
 ## Prerequisites
 
 Install MinGW-w64:
@@ -19,10 +25,6 @@ sudo apt install mingw-w64 make     # Linux
 make deps    # clone Detours (first time only)
 make         # produces build/wininet.dll
 ```
-
-## Installation
-
-Copy `build/wininet.dll` into the Dark Ages game directory. Dark Ages will load it automatically on startup.
 
 ## Other targets
 
