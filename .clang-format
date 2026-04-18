@@ -7,3 +7,5 @@ AlignConsecutiveDeclarations: None
 BinPackArguments: false
 BinPackParameters: false
 SortIncludes: false
+MaxEmptyLinesToKeep: 1
+KeepEmptyLinesAtTheStartOfBlocks: false

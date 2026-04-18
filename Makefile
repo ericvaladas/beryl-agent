@@ -51,7 +51,7 @@ OBJS := $(patsubst $(SRC_DIR)/%.cpp, $(BUILD_DIR)/%.o, $(SRCS))
 
 TARGET := $(BUILD_DIR)/wininet.dll
 
-.PHONY: all clean distclean deps format
+.PHONY: all clean distclean deps format format-check
 
 all: $(TARGET)
 
@@ -85,8 +85,14 @@ deps:
 	mkdir -p $(DEPS_DIR)
 	[ -d $(DEPS_DIR)/Detours ] || git clone --depth 1 https://github.com/microsoft/Detours.git $(DEPS_DIR)/Detours
 
+FORMAT_FILES := $(wildcard $(SRC_DIR)/*.cpp) \
+                $(filter-out $(SRC_DIR)/mongoose.h, $(wildcard $(SRC_DIR)/*.h))
+
 format:
-	clang-format -i $(SRC_DIR)/*.cpp $(SRC_DIR)/*.h
+	clang-format -i $(FORMAT_FILES)
+
+format-check:
+	clang-format --dry-run --Werror $(FORMAT_FILES)
 
 clean:
 	rm -rf $(BUILD_DIR)
