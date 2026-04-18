@@ -1,7 +1,7 @@
 CROSS    := i686-w64-mingw32
 CXX      := $(CROSS)-g++
 CC       := $(CROSS)-gcc
-AR       := $(CROSS)-gcc-ar
+AR       := $(CROSS)-ar
 STRIP    := $(CROSS)-strip
 
 SRC_DIR   := src
