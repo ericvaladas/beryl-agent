@@ -24,8 +24,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install MinGW-w64
-        run: sudo apt-get update && sudo apt-get install -y mingw-w64 make
+      - name: Install MinGW-w64 (win32 threads)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64 make
+          sudo update-alternatives --set i686-w64-mingw32-gcc /usr/bin/i686-w64-mingw32-gcc-win32
+          sudo update-alternatives --set i686-w64-mingw32-g++ /usr/bin/i686-w64-mingw32-g++-win32
 
       - name: Fetch dependencies
         run: make deps
