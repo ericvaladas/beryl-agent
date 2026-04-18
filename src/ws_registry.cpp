@@ -34,17 +34,17 @@ void RegistryAddClient(const json &clientData) {
   RegistryBroadcast(msg.dump());
 }
 
-void RegistryRemoveClient(DWORD clientPid) {
+void RegistryRemoveClient(const std::string &clientName) {
   registeredClients.erase(
       std::remove_if(
           registeredClients.begin(),
           registeredClients.end(),
-          [clientPid](const json &c) { return c["pid"] == clientPid; }
+          [&clientName](const json &c) { return c["name"] == clientName; }
       ),
       registeredClients.end()
   );
 
-  json msg = {{"type", "remove"}, {"pid", clientPid}};
+  json msg = {{"type", "remove"}, {"name", clientName}};
   RegistryBroadcast(msg.dump());
 }
 
@@ -64,10 +64,10 @@ void RegistryHandler(struct mg_connection *c, int ev, void *ev_data) {
         json clientData = data;
         clientData.erase("type");
         RegistryAddClient(clientData);
-        registryConnPid[c] = (DWORD)clientData["pid"];
+        registryConnName[c] = (std::string)clientData["name"];
       } else if (type == "deregister") {
-        DWORD clientPid = (DWORD)data["pid"];
-        RegistryRemoveClient(clientPid);
+        std::string clientName = (std::string)data["name"];
+        RegistryRemoveClient(clientName);
       } else if (type == "file") {
         uint32_t requestId = (uint32_t)data["id"];
         std::string path = data["path"];
@@ -105,10 +105,10 @@ void RegistryHandler(struct mg_connection *c, int ev, void *ev_data) {
     } catch (...) {
     }
   } else if (ev == MG_EV_CLOSE) {
-    auto it = registryConnPid.find(c);
-    if (it != registryConnPid.end()) {
+    auto it = registryConnName.find(c);
+    if (it != registryConnName.end()) {
       RegistryRemoveClient(it->second);
-      registryConnPid.erase(it);
+      registryConnName.erase(it);
     }
   }
 }

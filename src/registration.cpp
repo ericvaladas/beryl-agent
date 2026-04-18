@@ -5,7 +5,7 @@
 #include "ws_registry.h"
 
 json BuildRegistrationPayload() {
-  return {{"pid", pid}, {"port", clientPort}, {"name", charName}};
+  return {{"port", clientPort}, {"name", charName}};
 }
 
 void ReplayCharDataToBeryl(struct mg_connection *c) {
@@ -45,9 +45,9 @@ void Deregister() {
   if (!charRegistered)
     return;
   if (isRegistry) {
-    RegistryRemoveClient(pid);
+    RegistryRemoveClient(charName);
   } else if (registryClientConnected && g_registryClientConn) {
-    json msg = {{"type", "deregister"}, {"pid", pid}};
+    json msg = {{"type", "deregister"}, {"name", charName}};
     std::string s = msg.dump();
     mg_ws_send(g_registryClientConn, s.c_str(), s.size(), WEBSOCKET_OP_TEXT);
   }
