@@ -31,7 +31,6 @@ void WebSocketThread() {
     g_wakeupId = g_clientListener->id;
   }
   if (clientPort == 0) {
-    LogToFile("Failed to start client WS server on any port");
     mg_mgr_free(&g_mgr);
     return;
   }
@@ -147,7 +146,6 @@ BOOL APIENTRY DllMain(HINSTANCE hInst, DWORD reason, LPVOID) {
     }
 
     registeredClients.clear();
-    CloseLogFile();
     if (hMutex)
       CloseHandle(hMutex);
 

@@ -1,39 +1,5 @@
 #include "state.h"
 
-// Logging
-static std::mutex logMutex;
-static HANDLE g_logFile = INVALID_HANDLE_VALUE;
-
-void LogToFile(const std::string &message) {
-  std::lock_guard<std::mutex> lock(logMutex);
-  if (g_logFile == INVALID_HANDLE_VALUE) {
-    g_logFile = CreateFileA(
-        "C:\\Users\\Public\\hook_log.txt",
-        FILE_APPEND_DATA,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
-        NULL,
-        OPEN_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL,
-        NULL
-    );
-  }
-  if (g_logFile != INVALID_HANDLE_VALUE) {
-    DWORD written;
-    WriteFile(
-        g_logFile, message.c_str(), (DWORD)message.size(), &written, NULL
-    );
-    WriteFile(g_logFile, "\r\n", 2, &written, NULL);
-  }
-}
-
-void CloseLogFile() {
-  std::lock_guard<std::mutex> lock(logMutex);
-  if (g_logFile != INVALID_HANDLE_VALUE) {
-    CloseHandle(g_logFile);
-    g_logFile = INVALID_HANDLE_VALUE;
-  }
-}
-
 std::string GetDllDirectory(HINSTANCE hInst) {
   char path[MAX_PATH];
   GetModuleFileNameA(hInst, path, MAX_PATH);
