@@ -57,7 +57,7 @@ extern std::string g_suspendedDialog;
 
 // Registry bookkeeping
 extern std::vector<json> registeredClients;
-extern std::map<struct mg_connection *, DWORD> registryConnPid;
+extern std::map<struct mg_connection *, std::string> registryConnName;
 
 // DLL directory helper
 std::string GetDllDirectory(HINSTANCE hInst);
