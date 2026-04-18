@@ -1,13 +1,16 @@
 # Beryl Agent
 
-A DLL proxy (`wininet.dll`) for Dark Ages that hooks the game's send/recv functions using Microsoft Detours, exposing packet data over WebSocket.
+Beryl Agent is a DLL that injects into Dark Ages, hooks the game's `send` and `recv` functions with Microsoft Detours, and relays packets between the game and the Beryl client over a WebSocket.
+
+Targets Dark Ages **7.41**. Other versions may have different memory offsets and are not supported.
 
 ## Prerequisites
 
-Install MinGW-w64 (macOS):
+Install MinGW-w64:
 
 ```bash
-brew install mingw-w64
+brew install mingw-w64              # macOS
+sudo apt install mingw-w64 make     # Linux
 ```
 
 ## Build
@@ -17,7 +20,9 @@ make deps    # clone Detours (first time only)
 make         # produces build/wininet.dll
 ```
 
-Copy `build/wininet.dll` to the Dark Ages game directory.
+## Installation
+
+Copy `build/wininet.dll` into the Dark Ages game directory. Dark Ages will load it automatically on startup.
 
 ## Other targets
 
@@ -25,3 +30,13 @@ Copy `build/wininet.dll` to the Dark Ages game directory.
 make clean      # remove build artifacts
 make distclean  # also remove cloned dependencies
 ```
+
+## Authorization
+
+When a new client tries to connect, the agent shows an in-game dialog asking whether to allow connections from that origin. Approved origins are saved to `%LOCALAPPDATA%\beryl\settings.json` and auto-approved on future connections.
+
+## License
+
+Licensed under the GNU General Public License v2. See [LICENSE](LICENSE).
+
+Third-party components and their licenses are listed in [THIRD_PARTY.md](THIRD_PARTY.md).
