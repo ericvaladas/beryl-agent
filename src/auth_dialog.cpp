@@ -11,6 +11,7 @@
 bool g_authDialogActive = false;
 struct mg_connection *g_pendingConn = nullptr;
 std::string g_pendingOrigin;
+std::string g_dialogOrigin;
 
 std::set<std::string> g_allowedOrigins;
 std::string g_allowedOriginsPath;
@@ -60,6 +61,7 @@ void ShowAuthDialog(const std::string &origin) {
 
   InjectServerPacket(pkt);
   g_authDialogActive = true;
+  g_dialogOrigin = origin;
 }
 
 void CloseAuthDialog() {
@@ -108,10 +110,12 @@ void ResetAuthState() {
   g_authDialogActive = false;
   g_pendingConn = nullptr;
   g_pendingOrigin.clear();
+  g_dialogOrigin.clear();
 }
 
 void PromoteConnection(struct mg_connection *c) {
   g_clientConn = c;
+  g_clientOrigin = g_pendingOrigin;
   BYTE ready = MSG_READY;
   mg_ws_send(g_clientConn, (const char *)&ready, 1, WEBSOCKET_OP_BINARY);
   std::lock_guard<std::mutex> lock(charDataMutex);
@@ -148,10 +152,13 @@ bool ShouldSuppressClientPacket(const BYTE *data, DWORD size) {
       InjectServerPacket(toReplay);
     }
 
-    if (accepted && g_pendingConn) {
-      g_allowedOrigins.insert(g_pendingOrigin);
+    if (accepted) {
+      g_allowedOrigins.insert(g_dialogOrigin);
       SaveAllowedOrigins();
-      PromoteConnection(g_pendingConn);
+      if (g_pendingConn) {
+        g_pendingOrigin = g_dialogOrigin;
+        PromoteConnection(g_pendingConn);
+      }
     } else if (g_pendingConn) {
       g_pendingConn->is_closing = 1;
     }

@@ -9,6 +9,7 @@
 extern bool g_authDialogActive;
 extern struct mg_connection *g_pendingConn;
 extern std::string g_pendingOrigin;
+extern std::string g_dialogOrigin;
 
 extern std::set<std::string> g_allowedOrigins;
 extern std::string g_allowedOriginsPath;

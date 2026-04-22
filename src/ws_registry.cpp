@@ -55,7 +55,17 @@ void RegistryRemoveClient(const std::string &clientName) {
 
 void RegistryHandler(struct mg_connection *c, int ev, void *ev_data) {
   if (ev == MG_EV_HTTP_MSG) {
-    mg_ws_upgrade(c, (struct mg_http_message *)ev_data, NULL);
+    struct mg_http_message *hm = (struct mg_http_message *)ev_data;
+    struct mg_str *origin = mg_http_get_header(hm, "Origin");
+    if (origin && origin->len > 0) {
+      std::string originStr(origin->buf, origin->len);
+      if (!g_allowedOrigins.count(originStr)) {
+        c->is_closing = 1;
+        return;
+      }
+      registryConnOrigin[c] = originStr;
+    }
+    mg_ws_upgrade(c, hm, NULL);
   } else if (ev == MG_EV_WS_OPEN) {
     RegistrySendClientList(c);
   } else if (ev == MG_EV_WS_MSG) {
@@ -106,10 +116,28 @@ void RegistryHandler(struct mg_connection *c, int ev, void *ev_data) {
         if (settingsFile.is_open()) {
           settingsFile << settings.dump();
         }
+
+        for (struct mg_connection *conn = g_mgr.conns; conn;
+             conn = conn->next) {
+          if (!conn->is_websocket)
+            continue;
+          if (conn == g_clientConn) {
+            if (!g_allowedOrigins.count(g_clientOrigin)) {
+              conn->is_closing = 1;
+            }
+            continue;
+          }
+          auto oit = registryConnOrigin.find(conn);
+          if (oit != registryConnOrigin.end() &&
+              !g_allowedOrigins.count(oit->second)) {
+            conn->is_closing = 1;
+          }
+        }
       }
     } catch (...) {
     }
   } else if (ev == MG_EV_CLOSE) {
+    registryConnOrigin.erase(c);
     auto it = registryConnName.find(c);
     if (it != registryConnName.end()) {
       RegistryRemoveClient(it->second);

@@ -46,3 +46,5 @@ std::string g_suspendedDialog;
 // Registry
 std::vector<json> registeredClients;
 std::map<struct mg_connection *, std::string> registryConnName;
+std::map<struct mg_connection *, std::string> registryConnOrigin;
+std::string g_clientOrigin;

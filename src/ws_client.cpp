@@ -183,9 +183,13 @@ void ClientHandler(struct mg_connection *c, int ev, void *ev_data) {
         origin ? std::string(origin->buf, origin->len) : "unknown";
     mg_ws_upgrade(c, hm, NULL);
   } else if (ev == MG_EV_WS_OPEN) {
-    if (g_pendingConn) {
-      g_pendingConn->is_closing = 1;
-      ResetAuthState();
+    if (g_authDialogActive) {
+      if (!g_pendingConn && g_pendingOrigin == g_dialogOrigin) {
+        g_pendingConn = c;
+        return;
+      }
+      c->is_closing = 1;
+      return;
     }
 
     if (g_clientConn) {
@@ -269,12 +273,13 @@ void ClientHandler(struct mg_connection *c, int ev, void *ev_data) {
   } else if (ev == MG_EV_CLOSE) {
     if (c == g_clientConn) {
       g_clientConn = nullptr;
+      g_clientOrigin.clear();
       if (c == g_fileSendConn) {
         g_fileSendConn = nullptr;
         g_fileQueue.clear();
       }
     } else if (c == g_pendingConn) {
-      ResetAuthState();
+      g_pendingConn = nullptr;
     }
   }
 }
