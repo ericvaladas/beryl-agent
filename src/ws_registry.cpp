@@ -7,6 +7,7 @@
 #include "auth_dialog.h"
 #include "registration.h"
 #include "state.h"
+#include "version.h"
 #include "ws_client.h"
 
 uint64_t g_registryReconnectTime = 0;
@@ -22,7 +23,11 @@ void RegistryBroadcast(const std::string &message) {
 }
 
 void RegistrySendClientList(struct mg_connection *c) {
-  json msg = {{"type", "init"}, {"clients", registeredClients}};
+  json msg = {
+      {"type", "init"},
+      {"agentVersion", BERYL_AGENT_VERSION},
+      {"clients", registeredClients}
+  };
   std::string s = msg.dump();
   mg_ws_send(c, s.c_str(), s.size(), WEBSOCKET_OP_TEXT);
 }
