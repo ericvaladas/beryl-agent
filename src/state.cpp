@@ -15,6 +15,7 @@ std::string GetDllDirectory(HINSTANCE hInst) {
 DWORD pid = 0;
 volatile bool running = true;
 std::string g_dllDirectory;
+volatile int g_lastFocus = -1;
 
 // Mongoose
 struct mg_mgr g_mgr;

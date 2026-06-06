@@ -104,17 +104,74 @@ void DrainPendingWalks() {
   }
 }
 
+// Window-focus detection. EVENT_SYSTEM_FOREGROUND fires on any desktop-wide
+// foreground change; WINEVENT_OUTOFCONTEXT callbacks are delivered through the
+// installing thread's message pump, so the hook is installed lazily on the
+// game thread (from the PeekMessage hook) and the callback runs there too.
+namespace {
+HWINEVENTHOOK g_focusHook = nullptr;
+
+int CurrentFocus() {
+  HWND fg = GetForegroundWindow();
+  DWORD fgPid = 0;
+  if (fg)
+    GetWindowThreadProcessId(fg, &fgPid);
+  return (fgPid == pid) ? 1 : 0;
+}
+
+void CALLBACK
+FocusEventProc(HWINEVENTHOOK, DWORD event, HWND, LONG, LONG, DWORD, DWORD) {
+  if (event != EVENT_SYSTEM_FOREGROUND)
+    return;
+  int focused = CurrentFocus();
+  if (focused == g_lastFocus)
+    return;
+  g_lastFocus = focused;
+  BYTE b = (BYTE)focused;
+  SendToBeryl(MSG_WINDOW_FOCUS, &b, 1);
+}
+} // namespace
+
+void InstallFocusHook() {
+  if (g_focusHook)
+    return;
+  g_focusHook = SetWinEventHook(
+      EVENT_SYSTEM_FOREGROUND,
+      EVENT_SYSTEM_FOREGROUND,
+      NULL,
+      FocusEventProc,
+      0,
+      0,
+      WINEVENT_OUTOFCONTEXT
+  );
+}
+
+void RemoveFocusHook() {
+  if (g_focusHook) {
+    UnhookWinEvent(g_focusHook);
+    g_focusHook = nullptr;
+  }
+}
+
+void SendCurrentFocus(struct mg_connection *c) {
+  g_lastFocus = CurrentFocus();
+  BYTE frame[2] = {MSG_WINDOW_FOCUS, (BYTE)g_lastFocus};
+  mg_ws_send(c, (const char *)frame, sizeof(frame), WEBSOCKET_OP_BINARY);
+}
+
 PeekMessageFn RealPeekMessageA = PeekMessageA;
 PeekMessageFn RealPeekMessageW = PeekMessageW;
 
 BOOL WINAPI
 HookedPeekMessageA(LPMSG lpMsg, HWND hWnd, UINT min, UINT max, UINT remove) {
+  InstallFocusHook();
   DrainPendingWalks();
   return RealPeekMessageA(lpMsg, hWnd, min, max, remove);
 }
 
 BOOL WINAPI
 HookedPeekMessageW(LPMSG lpMsg, HWND hWnd, UINT min, UINT max, UINT remove) {
+  InstallFocusHook();
   DrainPendingWalks();
   return RealPeekMessageW(lpMsg, hWnd, min, max, remove);
 }

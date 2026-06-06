@@ -18,6 +18,7 @@ constexpr BYTE MSG_READ_MEMORY = 0x04;
 constexpr BYTE MSG_WRITE_MEMORY = 0x05;
 constexpr BYTE MSG_BECOME_REG = 0x06;
 constexpr BYTE MSG_READY = 0x07;
+constexpr BYTE MSG_WINDOW_FOCUS = 0x08;
 
 constexpr int REGISTRY_PORT = 21000;
 constexpr int CLIENT_PORT_START = 21001;
@@ -27,6 +28,8 @@ constexpr int CLIENT_PORT_END = 21020;
 extern DWORD pid;
 extern volatile bool running;
 extern std::string g_dllDirectory;
+// Last window-focus state pushed to Beryl: -1 unknown, 0 unfocused, 1 focused.
+extern volatile int g_lastFocus;
 
 // Mongoose connections / state
 extern struct mg_mgr g_mgr;

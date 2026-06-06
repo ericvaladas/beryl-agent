@@ -52,3 +52,11 @@ BOOL WINAPI
 HookedPeekMessageA(LPMSG lpMsg, HWND hWnd, UINT min, UINT max, UINT remove);
 BOOL WINAPI
 HookedPeekMessageW(LPMSG lpMsg, HWND hWnd, UINT min, UINT max, UINT remove);
+
+// Window-focus push. InstallFocusHook is idempotent and must be called from the
+// game thread (it is, via the PeekMessage hook); RemoveFocusHook tears it down
+// at unload. SendCurrentFocus pushes the current state to a connection from the
+// mongoose thread (used to sync a newly connected client).
+void InstallFocusHook();
+void RemoveFocusHook();
+void SendCurrentFocus(struct mg_connection *c);

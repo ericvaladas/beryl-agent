@@ -115,6 +115,7 @@ void PromoteConnection(struct mg_connection *c) {
   g_clientOrigin = g_pendingOrigin;
   BYTE ready = MSG_READY;
   mg_ws_send(g_clientConn, (const char *)&ready, 1, WEBSOCKET_OP_BINARY);
+  SendCurrentFocus(g_clientConn);
   std::lock_guard<std::mutex> lock(charDataMutex);
   if (!charName.empty()) {
     ReplayCharDataToBeryl(g_clientConn);
